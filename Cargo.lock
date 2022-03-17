@@ -1828,7 +1828,6 @@ dependencies = [
  "ockam_node",
  "ockam_transport_tcp",
  "ockam_vault",
- "ockam_vault_sync_core",
  "rand 0.8.5",
  "rand_xorshift",
  "serde 1.0.136",
@@ -1849,7 +1848,6 @@ dependencies = [
  "lazy_static",
  "ockam_core",
  "ockam_vault",
- "ockam_vault_sync_core",
  "tokio",
 ]
 
@@ -1864,7 +1862,6 @@ dependencies = [
  "ockam_macros",
  "ockam_node",
  "ockam_vault",
- "ockam_vault_sync_core",
  "rand 0.8.5",
  "rand_pcg",
  "serde 1.0.136",
@@ -1953,7 +1950,6 @@ dependencies = [
  "ockam_node",
  "ockam_transport_tcp",
  "ockam_vault",
- "ockam_vault_sync_core",
  "rand 0.8.5",
  "rand_xorshift",
  "serde 1.0.136",
@@ -1991,7 +1987,6 @@ dependencies = [
  "ockam_key_exchange_core",
  "ockam_node",
  "ockam_vault",
- "ockam_vault_sync_core",
  "zeroize",
 ]
 
@@ -2003,7 +1998,6 @@ dependencies = [
  "ockam_key_exchange_core",
  "ockam_node",
  "ockam_vault",
- "ockam_vault_sync_core",
 ]
 
 [[package]]
@@ -2111,6 +2105,7 @@ dependencies = [
  "hkdf",
  "ockam_core",
  "ockam_macros",
+ "ockam_node",
  "rand 0.8.5",
  "rand_pcg",
  "sha2",
@@ -2122,22 +2117,6 @@ dependencies = [
  "tracing",
  "trybuild",
  "x25519-dalek",
-]
-
-[[package]]
-name = "ockam_vault_sync_core"
-version = "0.41.0"
-dependencies = [
- "ockam_core",
- "ockam_macros",
- "ockam_node",
- "ockam_vault",
- "rand 0.8.5",
- "rand_pcg",
- "serde 1.0.136",
- "serde-big-array",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3006,9 +2985,9 @@ checksum = "6bdef32e8150c2a081110b42772ffe7d7c9032b606bc226c8260fd97e0976601"
 
 [[package]]
 name = "syn"
-version = "1.0.89"
+version = "1.0.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea297be220d52398dcc07ce15a209fce436d361735ac1db700cab3b6cdfb9f54"
+checksum = "704df27628939572cd88d33f171cd6f896f4eaca85252c6e0a72d8d8287ee86f"
 dependencies = [
  "proc-macro2",
  "quote",
