@@ -1,0 +1,55 @@
+[package]
+name = "ockam_getrandom_software"
+version = "0.1.0"
+authors = ["Ockam Developers"]
+edition = "2021"
+license = "Apache-2.0"
+homepage = "https://github.com/ockam-network/ockam"
+repository = "https://github.com/ockam-network/ockam/implementations/rust/ockam/ockam_core"
+readme = "README.md"
+categories = [
+    "cryptography",
+    "asynchronous",
+    "authentication",
+    "network-programming",
+    "embedded",
+]
+keywords = ["ockam", "crypto", "p2p", "cryptography", "encryption"]
+description = """
+Semi-random number generator with a fixed seed that is not intended for
+production use.
+"""
+#publish = true
+#rust-version = "1.56.0"
+
+[features]
+default = ["std"]
+
+# Feature (enabled by default): "std" enables functionality expected to
+# be available on a standard platform.
+std = [
+    "alloc",
+    "ockam_core/std",
+]
+
+# Feature: "no_std" enables functionality required for platforms
+# without the standard library.
+no_std = [
+    "ockam_core/no_std",
+    "lazy_static/spin_no_std",
+]
+
+# Feature: "alloc" enables support for heap allocation (implied by `feature = "std"`)
+alloc = [
+    "ockam_core/alloc",
+]
+
+[dependencies]
+ockam_core = { path = "../ockam_core", version = "^0.51.0", default-features = false }
+getrandom = "0.2"
+lazy_static = { version = "1.4" }
+rand = { version = "0.8", default-features = false }
+rand_pcg = { version = "0.3", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
