@@ -2,7 +2,7 @@ use minicbor::{Decoder, Encode};
 use tracing::{trace, warn};
 
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, Address, Route};
+use ockam_core::{self, Address, ApiMsg, Route};
 use ockam_node::Context;
 
 use crate::cloud::enroll::{Authenticator, AuthenticatorClientTrait};
@@ -18,7 +18,7 @@ pub mod space;
 pub struct Client {
     ctx: Context,
     route: Route,
-    buf: Vec<u8>,
+    buf: ApiMsg,
 }
 
 impl Client {
@@ -27,7 +27,7 @@ impl Client {
         Ok(Client {
             ctx,
             route: r,
-            buf: Vec::new(),
+            buf: ApiMsg::default(),
         })
     }
 
@@ -245,14 +245,14 @@ impl Client {
         target: &str,
         label: &str,
         req: &RequestBuilder<'_, T>,
-    ) -> ockam_core::Result<Vec<u8>>
+    ) -> ockam_core::Result<ApiMsg>
     where
         T: Encode<()>,
     {
-        let mut buf = Vec::new();
+        let mut buf = ApiMsg::default();
         req.encode(&mut buf)?;
         trace!(target = %target, label = %label, id = %req.header().id(), "-> req");
-        let vec: Vec<u8> = self.ctx.send_and_receive(self.route.clone(), buf).await?;
+        let vec = self.ctx.send_and_receive(self.route.clone(), buf).await?;
         Ok(vec)
     }
 }
@@ -323,7 +323,7 @@ mod tests {
             ctx: &mut Context,
             msg: Routed<Self::Message>,
         ) -> ockam_core::Result<()> {
-            let mut buf = Vec::new();
+            let mut buf = ApiMsg::default();
             {
                 let mut dec = Decoder::new(msg.as_body());
                 let req: Request = dec.decode()?;

@@ -1,13 +1,15 @@
 pub mod types;
 
 use crate::{Error, Method, Request, RequestBuilder, Response, Status};
+use core::borrow::Borrow;
+use core::convert::Infallible;
 use core::fmt;
-use minicbor::encode::{self, Write};
+use minicbor::encode;
 use minicbor::{Decoder, Encode};
 use ockam_core::compat::collections::HashMap;
-use ockam_core::compat::{io, rand};
+use ockam_core::compat::rand;
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, Address, Route, Routed, Worker};
+use ockam_core::{self, Address, ApiMsg, Route, Routed, Worker};
 use ockam_node::Context;
 use tracing::{trace, warn};
 use types::{CreateNode, NodeInfo};
@@ -18,14 +20,14 @@ pub struct Server(HashMap<String, NodeInfo<'static>>);
 #[ockam_core::worker]
 impl Worker for Server {
     type Context = Context;
-    type Message = Vec<u8>;
+    type Message = ApiMsg;
 
     async fn handle_message(
         &mut self,
         ctx: &mut Context,
         msg: Routed<Self::Message>,
     ) -> ockam_core::Result<()> {
-        let mut buf = Vec::new();
+        let mut buf = ApiMsg::default();
         self.on_request(msg.as_body(), &mut buf)?;
         ctx.send(msg.return_route(), buf).await
     }
@@ -36,11 +38,8 @@ impl Server {
         Server::default()
     }
 
-    fn on_request<W>(&mut self, data: &[u8], buf: W) -> Result<(), NodesError>
-    where
-        W: Write<Error = io::Error>,
-    {
-        let mut dec = Decoder::new(data);
+    fn on_request(&mut self, data: &ApiMsg, buf: &mut ApiMsg) -> Result<(), NodesError> {
+        let mut dec = Decoder::new(data.borrow());
         let req: Request = dec.decode()?;
 
         trace! {
@@ -130,7 +129,7 @@ fn rand_id() -> String {
 pub struct Client {
     ctx: Context,
     route: Route,
-    buf: Vec<u8>,
+    buf: ApiMsg,
 }
 
 impl Client {
@@ -139,7 +138,7 @@ impl Client {
         Ok(Client {
             ctx,
             route: r,
-            buf: Vec::new(),
+            buf: ApiMsg::default(),
         })
     }
 
@@ -203,14 +202,14 @@ impl Client {
         &mut self,
         label: &str,
         req: &RequestBuilder<'_, T>,
-    ) -> ockam_core::Result<Vec<u8>>
+    ) -> ockam_core::Result<ApiMsg>
     where
         T: Encode<()>,
     {
-        let mut buf = Vec::new();
+        let mut buf = ApiMsg::default();
         req.encode(&mut buf)?;
         trace!(target: "ockam_api::nodes::client", label = %label, id = %req.header().id(), "-> req");
-        let vec: Vec<u8> = self.ctx.send_and_receive(self.route.clone(), buf).await?;
+        let vec = self.ctx.send_and_receive(self.route.clone(), buf).await?;
         Ok(vec)
     }
 }
@@ -260,7 +259,7 @@ pub struct NodesError(ErrorImpl);
 #[derive(Debug)]
 enum ErrorImpl {
     Decode(minicbor::decode::Error),
-    Encode(minicbor::encode::Error<io::Error>),
+    Encode(minicbor::encode::Error<Infallible>),
 }
 
 impl fmt::Display for NodesError {
@@ -288,8 +287,8 @@ impl From<minicbor::decode::Error> for NodesError {
     }
 }
 
-impl From<minicbor::encode::Error<io::Error>> for NodesError {
-    fn from(e: minicbor::encode::Error<io::Error>) -> Self {
+impl From<minicbor::encode::Error<Infallible>> for NodesError {
+    fn from(e: minicbor::encode::Error<Infallible>) -> Self {
         NodesError(ErrorImpl::Encode(e))
     }
 }

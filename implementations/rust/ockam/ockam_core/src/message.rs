@@ -7,6 +7,7 @@ use crate::{
     Address, Error, LocalMessage, Result, Route, TransportMessage,
 };
 use core::{
+    convert::Infallible,
     fmt::{self, Debug, Display, Formatter},
     ops::{Deref, DerefMut},
 };
@@ -337,5 +338,72 @@ impl Encodable for Any {
 impl Decodable for Any {
     fn decode(_: &[u8]) -> Result<Self> {
         Ok(Self)
+    }
+}
+
+/// Request-Response API message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApiMsg(Vec<u8>);
+
+impl AsRef<[u8]> for ApiMsg {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Deref for ApiMsg {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::borrow::Borrow<[u8]> for ApiMsg {
+    fn borrow(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for ApiMsg {
+    fn from(v: Vec<u8>) -> Self {
+        ApiMsg(v)
+    }
+}
+
+impl From<ApiMsg> for Vec<u8> {
+    fn from(v: ApiMsg) -> Self {
+        v.0
+    }
+}
+
+impl Encodable for ApiMsg {
+    fn encode(&self) -> Result<Encoded> {
+        Ok(self.0.clone()) // TODO: avoid copying
+    }
+}
+
+impl Decodable for ApiMsg {
+    fn decode(e: &[u8]) -> Result<Self> {
+        Ok(ApiMsg(e.to_vec()))
+    }
+}
+
+impl Message for ApiMsg {}
+
+impl minicbor::encode::Write for ApiMsg {
+    type Error = Infallible;
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        self.0.extend_from_slice(buf);
+        Ok(())
+    }
+}
+
+impl minicbor::encode::Write for &mut ApiMsg {
+    type Error = Infallible;
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        ApiMsg::write_all(self, buf)
     }
 }
