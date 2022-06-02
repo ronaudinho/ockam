@@ -2,12 +2,14 @@ pub mod cloud;
 pub(crate) mod error;
 pub mod nodes;
 
+use core::convert::Infallible;
 use core::fmt;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{Decode, Encode};
 use ockam_core::compat::borrow::Cow;
 use ockam_core::compat::rand;
+use ockam_core::Cbor;
 use tinyvec::ArrayVec;
 
 /// CDDL schema or request and response headers as well as errors.
@@ -412,6 +414,12 @@ impl<'a, T: Encode<()>> RequestBuilder<'a, T> {
         }
         Ok(())
     }
+
+    pub fn to_cbor(&self) -> Result<Cbor, encode::Error<Infallible>> {
+        let mut cbor = Cbor::default();
+        self.encode(&mut cbor)?;
+        Ok(cbor)
+    }
 }
 
 #[derive(Debug)]
@@ -467,5 +475,11 @@ impl<T: Encode<()>> ResponseBuilder<T> {
             e.encode(b)?;
         }
         Ok(())
+    }
+
+    pub fn to_cbor(&self) -> Result<Cbor, encode::Error<Infallible>> {
+        let mut cbor = Cbor::default();
+        self.encode(&mut cbor)?;
+        Ok(cbor)
     }
 }

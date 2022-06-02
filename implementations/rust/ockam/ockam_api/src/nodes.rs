@@ -9,7 +9,7 @@ use minicbor::{Decoder, Encode};
 use ockam_core::compat::collections::HashMap;
 use ockam_core::compat::rand;
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, Address, ApiMsg, Route, Routed, Worker};
+use ockam_core::{self, Address, Cbor, Route, Routed, Worker};
 use ockam_node::Context;
 use tracing::{trace, warn};
 use types::{CreateNode, NodeInfo};
@@ -20,16 +20,15 @@ pub struct Server(HashMap<String, NodeInfo<'static>>);
 #[ockam_core::worker]
 impl Worker for Server {
     type Context = Context;
-    type Message = ApiMsg;
+    type Message = Cbor;
 
     async fn handle_message(
         &mut self,
         ctx: &mut Context,
         msg: Routed<Self::Message>,
     ) -> ockam_core::Result<()> {
-        let mut buf = ApiMsg::default();
-        self.on_request(msg.as_body(), &mut buf)?;
-        ctx.send(msg.return_route(), buf).await
+        let cbor = self.on_request(msg.as_body())?;
+        ctx.send(msg.return_route(), cbor).await
     }
 }
 
@@ -38,7 +37,7 @@ impl Server {
         Server::default()
     }
 
-    fn on_request(&mut self, data: &ApiMsg, buf: &mut ApiMsg) -> Result<(), NodesError> {
+    fn on_request(&mut self, data: &Cbor) -> Result<Cbor, NodesError> {
         let mut dec = Decoder::new(data.borrow());
         let req: Request = dec.decode()?;
 
@@ -51,25 +50,25 @@ impl Server {
             "request"
         }
 
-        match req.method() {
+        let res = match req.method() {
             Some(Method::Get) => match req.path_segments::<2>().as_slice() {
                 // Get all nodes:
                 [""] => Response::ok(req.id())
                     .body(encode::ArrayIter::new(self.0.values()))
-                    .encode(buf)?,
+                    .to_cbor()?,
                 // Get a single node:
                 [id] => {
                     if let Some(n) = self.0.get(*id) {
-                        Response::ok(req.id()).body(n).encode(buf)?
+                        Response::ok(req.id()).body(n).to_cbor()?
                     } else {
-                        Response::not_found(req.id()).encode(buf)?
+                        Response::not_found(req.id()).to_cbor()?
                     }
                 }
                 _ => {
                     let error = Error::new(req.path())
                         .with_method(Method::Post)
                         .with_message("unknown path");
-                    Response::bad_request(req.id()).body(error).encode(buf)?
+                    Response::bad_request(req.id()).body(error).to_cbor()?
                 }
             },
             Some(Method::Post) if req.has_body() => {
@@ -78,45 +77,44 @@ impl Server {
                 let ni = NodeInfo::new()
                     .with_name(cn.name().to_string())
                     .with_id(rand_id());
-                Response::ok(req.id()).body(&ni).encode(buf)?;
+                let res = Response::ok(req.id()).body(&ni).to_cbor()?;
                 self.0.insert(ni.id().to_string(), ni);
+                res
             }
             Some(Method::Post) => {
                 let error = Error::new(req.path())
                     .with_method(Method::Post)
                     .with_message("missing request body");
-                Response::bad_request(req.id()).body(error).encode(buf)?
+                Response::bad_request(req.id()).body(error).to_cbor()?
             }
             Some(Method::Delete) => match req.path_segments::<2>().as_slice() {
                 [id] => {
                     if self.0.remove(*id).is_some() {
-                        Response::ok(req.id()).encode(buf)?
+                        Response::ok(req.id()).to_cbor()?
                     } else {
-                        Response::not_found(req.id()).encode(buf)?
+                        Response::not_found(req.id()).to_cbor()?
                     }
                 }
                 _ => {
                     let error = Error::new(req.path())
                         .with_method(Method::Post)
                         .with_message("unknown path");
-                    Response::bad_request(req.id()).body(error).encode(buf)?
+                    Response::bad_request(req.id()).body(error).to_cbor()?
                 }
             },
             Some(m) => {
                 let error = Error::new(req.path()).with_method(m);
                 Response::builder(req.id(), Status::MethodNotAllowed)
                     .body(error)
-                    .encode(buf)?
+                    .to_cbor()?
             }
             None => {
                 let error = Error::new(req.path()).with_message("unknown method");
-                Response::not_implemented(req.id())
-                    .body(error)
-                    .encode(buf)?
+                Response::not_implemented(req.id()).body(error).to_cbor()?
             }
-        }
+        };
 
-        Ok(())
+        Ok(res)
     }
 }
 
@@ -129,7 +127,7 @@ fn rand_id() -> String {
 pub struct Client {
     ctx: Context,
     route: Route,
-    buf: ApiMsg,
+    buf: Cbor,
 }
 
 impl Client {
@@ -138,7 +136,7 @@ impl Client {
         Ok(Client {
             ctx,
             route: r,
-            buf: ApiMsg::default(),
+            buf: Cbor::default(),
         })
     }
 
@@ -202,11 +200,11 @@ impl Client {
         &mut self,
         label: &str,
         req: &RequestBuilder<'_, T>,
-    ) -> ockam_core::Result<ApiMsg>
+    ) -> ockam_core::Result<Cbor>
     where
         T: Encode<()>,
     {
-        let mut buf = ApiMsg::default();
+        let mut buf = Cbor::default();
         req.encode(&mut buf)?;
         trace!(target: "ockam_api::nodes::client", label = %label, id = %req.header().id(), "-> req");
         let vec = self.ctx.send_and_receive(self.route.clone(), buf).await?;

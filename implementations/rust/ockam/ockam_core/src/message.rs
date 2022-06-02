@@ -341,17 +341,17 @@ impl Decodable for Any {
     }
 }
 
-/// Request-Response API message.
+/// A CBOR encoded message.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ApiMsg(Vec<u8>);
+pub struct Cbor(Vec<u8>);
 
-impl AsRef<[u8]> for ApiMsg {
+impl AsRef<[u8]> for Cbor {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl Deref for ApiMsg {
+impl Deref for Cbor {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -359,39 +359,39 @@ impl Deref for ApiMsg {
     }
 }
 
-impl core::borrow::Borrow<[u8]> for ApiMsg {
+impl core::borrow::Borrow<[u8]> for Cbor {
     fn borrow(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl From<Vec<u8>> for ApiMsg {
+impl From<Vec<u8>> for Cbor {
     fn from(v: Vec<u8>) -> Self {
-        ApiMsg(v)
+        Cbor(v)
     }
 }
 
-impl From<ApiMsg> for Vec<u8> {
-    fn from(v: ApiMsg) -> Self {
+impl From<Cbor> for Vec<u8> {
+    fn from(v: Cbor) -> Self {
         v.0
     }
 }
 
-impl Encodable for ApiMsg {
+impl Encodable for Cbor {
     fn encode(&self) -> Result<Encoded> {
         Ok(self.0.clone()) // TODO: avoid copying
     }
 }
 
-impl Decodable for ApiMsg {
+impl Decodable for Cbor {
     fn decode(e: &[u8]) -> Result<Self> {
-        Ok(ApiMsg(e.to_vec()))
+        Ok(Cbor(e.to_vec()))
     }
 }
 
-impl Message for ApiMsg {}
+impl Message for Cbor {}
 
-impl minicbor::encode::Write for ApiMsg {
+impl minicbor::encode::Write for Cbor {
     type Error = Infallible;
 
     fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
@@ -400,10 +400,10 @@ impl minicbor::encode::Write for ApiMsg {
     }
 }
 
-impl minicbor::encode::Write for &mut ApiMsg {
+impl minicbor::encode::Write for &mut Cbor {
     type Error = Infallible;
 
     fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
-        ApiMsg::write_all(self, buf)
+        (*self).write_all(buf)
     }
 }
