@@ -1,0 +1,20 @@
+[package]
+name    = "ockam_invitations"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+ed25519 = ["ed25519-dalek", "rand"]
+ssh     = ["ssh-key"]
+github  = ["ssh"]
+
+[dependencies]
+minicbor      = { version = "0.17.1", features = ["derive", "std"] }
+signature     = "1.5.0"
+
+ed25519-dalek = { version = "1.0.1", optional = true }
+rand          = { version = "0.8.5", optional = true }
+ssh-key       = { version = "0.4.2", optional = true, features = ["ed25519", "rsa", "alloc"] }
+
+[dev-dependencies]
+ockam_invitations = { path = ".", features = ["ed25519", "ssh", "github"] }
