@@ -90,7 +90,7 @@ impl AsRef<[u8]> for SecretKey {
 pub struct PublicKey {
     #[cfg(feature = "tag")]
     #[n(0)] tag: TypeTag<8922437>,
-    #[b(1)] data: PublicKeyVec,
+    #[n(1)] data: PublicKeyVec,
     #[n(2)] stype: SecretType,
 }
 

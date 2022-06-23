@@ -7,19 +7,24 @@ use core::fmt;
 use minicbor::{Decoder, Encode};
 use ockam_core::errcode::{Kind, Origin};
 use ockam_core::{self, Address, Result, Route, Routed, Worker};
-use ockam_identity::authenticated_storage::AuthenticatedStorage;
+use ockam_identity::{Identity, IdentityVault};
 use ockam_node::Context;
 use tracing::{trace, warn};
-use types::Attribute;
+use types::{Signature, Signed};
 
-/// Auth API server.
-#[derive(Debug)]
-pub struct Server<S> {
-    store: S,
+/// A signer server signs arbitrary data handed to it.
+pub struct Server<V: IdentityVault> {
+    id: Identity<V>,
+}
+
+impl<V: IdentityVault> fmt::Debug for Server<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Server").finish()
+    }
 }
 
 #[ockam_core::worker]
-impl<S: AuthenticatedStorage> Worker for Server<S> {
+impl<V: IdentityVault> Worker for Server<V> {
     type Context = Context;
     type Message = Vec<u8>;
 
@@ -29,9 +34,9 @@ impl<S: AuthenticatedStorage> Worker for Server<S> {
     }
 }
 
-impl<S: AuthenticatedStorage> Server<S> {
-    pub fn new(s: S) -> Self {
-        Server { store: s }
+impl<V: IdentityVault> Server<V> {
+    pub fn new(id: Identity<V>) -> Self {
+        Server { id }
     }
 
     async fn on_request(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -39,7 +44,7 @@ impl<S: AuthenticatedStorage> Server<S> {
         let req: Request = dec.decode()?;
 
         trace! {
-            target: "ockam_api::auth::server",
+            target: "ockam_api::signer::server",
             id     = %req.id(),
             method = ?req.method(),
             path   = %req.path(),
@@ -48,13 +53,13 @@ impl<S: AuthenticatedStorage> Server<S> {
         }
 
         let res = match req.method() {
-            Some(Method::Get) => match req.path_segments::<5>().as_slice() {
-                ["authenticated", id, "attribute", key] => {
-                    if let Some(a) = self.store.get(id, key).await? {
-                        Response::ok(req.id()).body(Attribute::new(&a)).to_vec()?
-                    } else {
-                        Response::not_found(req.id()).to_vec()?
-                    }
+            Some(Method::Post) => match req.path_segments::<2>().as_slice() {
+                ["sign"] => {
+                    let dat = &dec.input()[dec.position()..];
+                    let kid = self.id.identifier()?;
+                    let sig = self.id.create_signature(dat).await?;
+                    let bdy = Signed::new(dat, Signature::new((&kid).into(), sig.as_ref()));
+                    Response::ok(req.id()).body(bdy).to_vec()?
                 }
                 _ => response::unknown_path(&req).to_vec()?,
             },
@@ -65,7 +70,6 @@ impl<S: AuthenticatedStorage> Server<S> {
     }
 }
 
-/// Auth API client.
 pub struct Client {
     ctx: Context,
     route: Route,
@@ -81,7 +85,7 @@ impl fmt::Debug for Client {
 }
 
 impl Client {
-    pub async fn new(r: Route, ctx: &Context) -> ockam_core::Result<Self> {
+    pub async fn new(r: Route, ctx: &Context) -> Result<Self> {
         let ctx = ctx.new_detached(Address::random_local()).await?;
         Ok(Client {
             ctx,
@@ -90,19 +94,18 @@ impl Client {
         })
     }
 
-    pub async fn get(&mut self, id: &str, attr: &str) -> Result<Option<&[u8]>> {
-        let req = Request::get(format!("/authenticated/{id}/attribute/{attr}"));
-        self.buf = self.request("get attribute", None, &req).await?;
+    /// Have some data signed by the signer.
+    pub async fn sign(&mut self, data: &[u8]) -> Result<Signed<'_>> {
+        let req = Request::post("/sign").body(data);
+        self.buf = self.request("sign", None, &req).await?;
+        assert_response_match("signer_signed", &self.buf);
         let mut d = Decoder::new(&self.buf);
-        let res = response("get attribute", &mut d)?;
-        match res.status() {
-            Some(Status::Ok) => {
-                assert_response_match("attribute", &self.buf);
-                let a: Attribute = d.decode()?;
-                Ok(Some(a.value()))
-            }
-            Some(Status::NotFound) => Ok(None),
-            _ => Err(error("get attribute", &res, &mut d)),
+        let res = response("sign", &mut d)?;
+        if res.status() == Some(Status::Ok) {
+            let s: Signed = d.decode()?;
+            Ok(s)
+        } else {
+            Err(error("sign", &res, &mut d))
         }
     }
 
@@ -120,7 +123,7 @@ impl Client {
         req.encode(&mut buf)?;
         assert_request_match(schema, &buf);
         trace! {
-            target: "ockam_api::auth::client",
+            target: "ockam_api::signer::client",
             id     = %req.header().id(),
             method = ?req.header().method(),
             path   = %req.header().path(),
@@ -136,7 +139,7 @@ impl Client {
 fn response(label: &str, dec: &mut Decoder<'_>) -> Result<Response> {
     let res: Response = dec.decode()?;
     trace! {
-        target: "ockam_api::auth::client",
+        target: "ockam_api::signer::client",
         re     = %res.re(),
         id     = %res.id(),
         status = ?res.status(),
@@ -154,7 +157,7 @@ fn error(label: &str, res: &Response, dec: &mut Decoder<'_>) -> ockam_core::Erro
             Err(e) => return e.into(),
         };
         warn! {
-            target: "ockam_api::auth::client",
+            target: "ockam_api::signer::client",
             id     = %res.id(),
             re     = %res.re(),
             status = ?res.status(),

@@ -1,9 +1,11 @@
 pub mod auth;
+pub mod authenticator;
 pub mod cloud;
 pub mod error;
 pub mod identity;
 pub mod nodes;
 pub mod old;
+pub mod signer;
 pub mod vault;
 
 mod util;
@@ -120,6 +122,7 @@ pub enum Status {
     #[n(200)] Ok,
     #[n(400)] BadRequest,
     #[n(401)] Unauthorized,
+    #[n(403)] Forbidden,
     #[n(404)] NotFound,
     #[n(405)] MethodNotAllowed,
     #[n(500)] InternalServerError,
@@ -593,5 +596,28 @@ pub(crate) fn assert_response_match<'a>(schema: impl Into<Option<&'a str>>, cbor
                 tracing::error!(%schema, error = %e, "response body mismatch")
             }
         }
+    }
+}
+
+/// A Unix timestamp (seconds since 1970-01-01 00:00:00Z)
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, Copy, Encode, Decode, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cbor(transparent)]
+pub struct Timestamp(#[n(0)] u64);
+
+#[cfg(feature = "std")]
+impl Timestamp {
+    pub fn now() -> Option<Self> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| Timestamp(d.as_secs()))
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<Timestamp> for u64 {
+    fn from(t: Timestamp) -> Self {
+        t.0
     }
 }
