@@ -11,6 +11,9 @@ pub use util::*;
 #[cfg(feature = "lmdb")]
 pub mod lmdb;
 
+#[cfg(feature = "authority")]
+pub mod authority;
+
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use minicbor::encode::{self, Encoder, Write};

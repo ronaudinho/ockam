@@ -2237,11 +2237,13 @@ dependencies = [
  "ockam_transport_tcp",
  "ockam_vault",
  "quickcheck",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tinyvec",
  "tracing",
+ "url",
 ]
 
 [[package]]
