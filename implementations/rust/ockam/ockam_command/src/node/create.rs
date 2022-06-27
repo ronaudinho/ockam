@@ -7,6 +7,7 @@ use crate::{
 };
 use ockam::authenticated_storage::InMemoryStorage;
 use ockam::{vault::Vault, AsyncTryClone, Context, TcpTransport};
+use ockam::identity::{Identity, TrustEveryonePolicy};
 use ockam_api::{
     auth,
     identity::IdentityService,
@@ -127,9 +128,19 @@ async fn setup(ctx: Context, (c, cfg): (CreateCommand, OckamConfig)) -> anyhow::
     let bind = format!("0.0.0.0:{}", c.port);
     tcp.listen(&bind).await?;
 
+    let v = Vault::create();
+    let i = Identity::create(&ctx, &v).await?;
     let s = InMemoryStorage::new();
-    ctx.start_worker("authenticated", auth::Server::new(s))
-        .await?;
+
+    println!("{}", i.identifier()?);
+
+    i.create_secure_channel_listener("foo", TrustEveryonePolicy, &s).await?;
+
+    ctx.start_worker("authenticated", auth::Server::new(s.clone())).await?;
+
+    let cfg = authority::Config::new(i, s)
+        .with_auth0(authority::Auth0Config::new("https://127.0.0.1:12345".try_into().unwrap()));
+    ctx.start_worker("authority", authority::Server::new(cfg)).await?;
 
     // TODO: put that behind some flag or configuration
     let vault = Vault::create();

@@ -4,9 +4,11 @@ use minicbor::{Decode, Encode};
 use std::borrow::Cow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The various kinds of signing requests an authority handles.
 #[derive(Debug, Decode, Encode)]
 #[cbor(map)]
 pub enum CredentialRequest<'a> {
+    /// Sign an OAuth2 user profile.
     #[cbor(n(1))]
     Oauth2 {
         #[cbor(b(1), with = "minicbor::bytes")]
@@ -33,11 +35,14 @@ pub enum CredentialRequest<'a> {
     }
 }
 
+/// Signed data.
 #[derive(Debug, Decode, Encode)]
 #[rustfmt::skip]
 #[cbor(map)]
 pub struct Signed<'a> {
+    /// The data.
     #[b(1)] dat: CowBytes<'a>,
+    /// The detached signature.
     #[b(2)] sig: Signature<'a>
 }
 
@@ -45,13 +50,24 @@ impl<'a> Signed<'a> {
     pub fn new<D: Into<Cow<'a, [u8]>>>(data: D, sig: Signature<'a>) -> Self {
         Signed { dat: CowBytes(data.into()), sig }
     }
+    
+    pub fn data(&self) -> &[u8] {
+        &self.dat
+    }
+    
+    pub fn signature(&self) -> &Signature {
+        &self.sig
+    }
 }
 
+/// A detached signature.
 #[derive(Debug, Decode, Encode)]
 #[rustfmt::skip]
 #[cbor(map)]
 pub struct Signature<'a> {
+    /// The key ID that was used to sign the data.
     #[b(1)] key_id: CowStr<'a>,
+    /// The signature bytes.
     #[b(2)] signature: CowBytes<'a>
 }
 
@@ -76,6 +92,7 @@ impl<'a> Signature<'a> {
     }
 }
 
+/// OAuth2 access token data.
 #[derive(Debug, Decode, Encode)]
 #[rustfmt::skip]
 #[cbor(map)]
@@ -103,13 +120,18 @@ pub struct CreateProject<'a> {
     #[b(1)] name: &'a str
 }
 
+/// A membership credential.
 #[derive(Debug, Decode, Encode)]
 #[rustfmt::skip]
 #[cbor(map)]
 pub struct Membership<'a> {
+    /// The time when this credential was issues.
     #[n(1)] issued_at: Timestamp,
+    /// The member's key ID.
     #[b(2)] key_id: &'a str,
+    /// The member's public key.
     #[n(3)] public: PublicKey,
+    /// The member's attributes.
     #[b(4)] attributes: Option<&'a str>
 }
 
@@ -128,6 +150,22 @@ impl<'a> Membership<'a> {
             attributes: Some(attrs),
             .. self
         }
+    }
+    
+    pub fn issued_at(&self) -> Timestamp {
+        self.issued_at
+    }
+    
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+    
+    pub fn pubkey(&self) -> &PublicKey {
+        &self.public
+    }
+    
+    pub fn attributes(&self) -> Option<&str> {
+        self.attributes.as_deref()
     }
 }
 

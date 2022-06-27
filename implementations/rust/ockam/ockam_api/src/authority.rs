@@ -19,8 +19,24 @@ pub struct Config<V: IdentityVault, S: AuthenticatedStorage> {
     auth0: Option<Auth0Config>
 }
 
+impl<V: IdentityVault, S: AuthenticatedStorage> Config<V, S> {
+    pub fn new(id: Identity<V>, s: S) -> Self {
+        Config { id, store: s, auth0: None }
+    }
+    
+    pub fn with_auth0(self, cfg: Auth0Config) -> Self {
+        Config { auth0: Some(cfg), ..self }
+    }
+}
+
 pub struct Auth0Config {
     url: Url,
+}
+
+impl Auth0Config {
+    pub fn new(url: Url) -> Self {
+        Auth0Config { url }
+    }
 }
 
 pub struct Server<V: IdentityVault, S: AuthenticatedStorage> {
@@ -49,7 +65,7 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
         let mut dec = Decoder::new(data);
         let req: Request = dec.decode()?;
 
-        trace! {
+        debug! {
             target: "ockam_api::authority::server",
             from   = %they,
             id     = %req.id(),
@@ -74,9 +90,9 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
                                     .with_attributes(attrs);
                                 minicbor::to_vec(&m)?
                             };
-                            let kid = self.config.id.get_root_secret_key().await?;
-                            let sig = self.config.id.vault().sign(&kid, &cred).await?;
-                            let body = Signed::new(&cred, Signature::new(&kid, sig.as_ref()));
+                            let sig = self.config.id.create_signature(&cred).await?;
+                            let this = self.config.id.identifier()?;
+                            let body = Signed::new(&cred, Signature::new(this.key_id(), sig.as_ref()));
                             Response::ok(req.id()).body(body).to_vec()?
                         } else {
                             let error = Error::new(req.path())
@@ -108,7 +124,7 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
     }
 
     async fn verify(&self, data: &[u8], sig: &Signature<'_>) -> Result<()> {
-        let id = sig.key_id().try_into()?;
+        let id = IdentityIdentifier::from_key_id(sig.key_id().into());
         let sg = vault::Signature::new(sig.signature().to_vec()); // TODO: avoid allocation
         if self.config.id.verify_signature(&sg, &id, data, &self.config.store).await? {
             Ok(())
@@ -118,7 +134,7 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
     }
 
     async fn resolve_key(&self, key_id: &str) -> Result<vault::PublicKey> {
-        let id = key_id.try_into()?;
+        let id = IdentityIdentifier::from_key_id(key_id.into());
         if let Some(id) = self.config.id.get_known_identity(&id, &self.config.store).await? {
             return id.get_root_public_key()
         }
