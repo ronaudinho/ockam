@@ -1,5 +1,6 @@
 pub mod types;
 
+use core::marker::PhantomData;
 use crate::{Timestamp, Error, Method, Request, Response, ResponseBuilder, Status};
 use crate::signer::{self, types::Signed};
 use minicbor::Decoder;
@@ -16,76 +17,51 @@ const ENROLLER: &str = "enroller";
 const MEMBER: &str = "member";
 
 #[derive(Debug)]
-pub struct Server<S> {
+pub struct Server<M, S> {
     store: S,
-    signer: signer::Client
+    signer: signer::Client,
+    _mode: PhantomData<fn(&M)>
 }
 
+/// Marker type, used for privileged API operations.
+#[derive(Debug)]
+pub enum Admin {}
+
+/// Marker type, used for unprivileged API operations.
+#[derive(Debug)]
+pub enum General {}
+
 #[ockam_core::worker]
-impl<S: AuthenticatedStorage> Worker for Server<S> {
+impl<S: AuthenticatedStorage> Worker for Server<General, S> {
     type Context = Context;
     type Message = Vec<u8>;
 
     async fn handle_message(&mut self, c: &mut Context, m: Routed<Self::Message>) -> Result<()> {
-        let r =
-            if let Ok(i) = IdentitySecureChannelLocalInfo::find_info(m.local_message()) {
-                self.on_authenticated_request(i.their_identity_id(), m.as_body()).await?
-            } else {
-                self.on_unauthenticated_request(m.as_body()).await?
-            };
+        let i = IdentitySecureChannelLocalInfo::find_info(m.local_message())?;
+        let r = self.on_request(i.their_identity_id(), m.as_body()).await?;
         c.send(m.return_route(), r).await
     }
 }
 
-impl<S: AuthenticatedStorage> Server<S> {
+#[ockam_core::worker]
+impl<S: AuthenticatedStorage> Worker for Server<Admin, S> {
+    type Context = Context;
+    type Message = Vec<u8>;
+
+    async fn handle_message(&mut self, c: &mut Context, m: Routed<Self::Message>) -> Result<()> {
+        let r = self.on_admin_request(m.as_body()).await?;
+        c.send(m.return_route(), r).await
+    }
+}
+
+impl<S: AuthenticatedStorage> Server<General, S> {
     pub fn new(store: S, signer: signer::Client) -> Self {
-        Server { store, signer }
+        Server { store, signer, _mode: PhantomData }
     }
+}
 
-    /// Configuration API to maintain the set of authorised enrollers.
-    ///
-    /// TODO: How to ensure this is only available locally or in an otherwise
-    /// priviledged mode?
-    async fn on_unauthenticated_request(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut dec = Decoder::new(data);
-        let req: Request = dec.decode()?;
-
-        debug! {
-            target: "ockam_api::authenticator::direct::server",
-            id     = %req.id(),
-            method = ?req.method(),
-            path   = %req.path(),
-            body   = %req.has_body(),
-            "unauthenticated request"
-        }
-        
-        let res = match req.method() {
-            Some(Method::Post) => match req.path_segments::<2>().as_slice() {
-                ["register"] => {
-                    let e: Enroller = dec.decode()?;
-                    let n = Timestamp::now().ok_or_else(invalid_sys_time)?;
-                    let i = EnrollerInfo::new(n);
-                    let b = minicbor::to_vec(&i)?;
-                    self.store.set(ENROLLER, e.enroller().to_string(), b).await?;
-                    Response::ok(req.id()).to_vec()?
-                }
-                _ => unknown_path(&req).to_vec()?
-            }
-            Some(Method::Delete) => match req.path_segments::<3>().as_slice() {
-                ["deregister", enroller] => {
-                    self.store.del(ENROLLER, enroller).await?;
-                    Response::ok(req.id()).to_vec()?
-                }
-                _ => unknown_path(&req).to_vec()?
-            }
-            _ => invalid_method(&req).to_vec()?
-        };
-        
-        Ok(res)
-    }
-
-    /// Authentication requests from enrollers.
-    async fn on_authenticated_request(&mut self, from: &IdentityIdentifier, data: &[u8]) -> Result<Vec<u8>> {
+impl<S: AuthenticatedStorage> Server<General, S> {
+    async fn on_request(&mut self, from: &IdentityIdentifier, data: &[u8]) -> Result<Vec<u8>> {
         let mut dec = Decoder::new(data);
         let req: Request = dec.decode()?;
 
@@ -98,7 +74,7 @@ impl<S: AuthenticatedStorage> Server<S> {
             body   = %req.has_body(),
             "request"
         }
-        
+
         let res = match req.method() {
             Some(Method::Post) => match req.path_segments::<2>().as_slice() {
                 ["enroll"] => {
@@ -143,7 +119,51 @@ impl<S: AuthenticatedStorage> Server<S> {
             }
             _ => invalid_method(&req).to_vec()?
         };
-        
+
+        Ok(res)
+    }
+}
+
+impl<S: AuthenticatedStorage> Server<Admin, S> {
+    pub fn admin(store: S, signer: signer::Client) -> Self {
+        Server { store, signer, _mode: PhantomData }
+    }
+
+    async fn on_admin_request(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut dec = Decoder::new(data);
+        let req: Request = dec.decode()?;
+
+        debug! {
+            target: "ockam_api::authenticator::direct::server",
+            id     = %req.id(),
+            method = ?req.method(),
+            path   = %req.path(),
+            body   = %req.has_body(),
+            "unauthenticated request"
+        }
+
+        let res = match req.method() {
+            Some(Method::Post) => match req.path_segments::<2>().as_slice() {
+                ["register"] => {
+                    let e: Enroller = dec.decode()?;
+                    let n = Timestamp::now().ok_or_else(invalid_sys_time)?;
+                    let i = EnrollerInfo::new(n);
+                    let b = minicbor::to_vec(&i)?;
+                    self.store.set(ENROLLER, e.enroller().to_string(), b).await?;
+                    Response::ok(req.id()).to_vec()?
+                }
+                _ => unknown_path(&req).to_vec()?
+            }
+            Some(Method::Delete) => match req.path_segments::<3>().as_slice() {
+                ["deregister", enroller] => {
+                    self.store.del(ENROLLER, enroller).await?;
+                    Response::ok(req.id()).to_vec()?
+                }
+                _ => unknown_path(&req).to_vec()?
+            }
+            _ => invalid_method(&req).to_vec()?
+        };
+
         Ok(res)
     }
 }
