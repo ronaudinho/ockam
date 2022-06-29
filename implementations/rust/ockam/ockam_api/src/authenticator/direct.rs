@@ -1,15 +1,18 @@
 pub mod types;
 
 use core::marker::PhantomData;
-use crate::{Timestamp, Method, Request, Response};
+use crate::assert_request_match;
+use crate::{Error, Timestamp, Method, Request, RequestBuilder, Response, Status};
 use crate::signer::{self, types::Signed};
 use crate::util::response;
-use minicbor::Decoder;
+use core::fmt;
+use minicbor::{Decoder, Encode};
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, Result, Routed, Worker};
+use ockam_core::{self, Result, Address, Route, Routed, Worker};
 use ockam_identity::{IdentitySecureChannelLocalInfo, IdentityIdentifier};
 use ockam_identity::authenticated_storage::AuthenticatedStorage;
 use ockam_node::Context;
+use ockam_vault::KeyId;
 use tracing::{trace, warn};
 use types::{CredentialRequest, MemberCredential, Enroller, EnrollerInfo};
 
@@ -150,6 +153,17 @@ impl<S: AuthenticatedStorage> Server<Admin, S> {
                 }
                 _ => response::unknown_path(&req).to_vec()?
             }
+            Some(Method::Get) => match req.path_segments::<3>().as_slice() {
+                ["enroller", enroller] => {
+                    if let Some(e) = self.store.get(ENROLLER, enroller).await? {
+                        let i: EnrollerInfo = minicbor::decode(&e)?;
+                        Response::ok(req.id()).body(&i).to_vec()?
+                    } else {
+                        Response::not_found(req.id()).to_vec()?
+                    }
+                }
+                _ => response::unknown_path(&req).to_vec()?
+            }
             Some(Method::Delete) => match req.path_segments::<3>().as_slice() {
                 ["deregister", enroller] => {
                     self.store.del(ENROLLER, enroller).await?;
@@ -167,3 +181,114 @@ impl<S: AuthenticatedStorage> Server<Admin, S> {
 fn invalid_sys_time() -> ockam_core::Error {
     ockam_core::Error::new(Origin::Node, Kind::Internal, "invalid system time")
 }
+
+pub struct Client {
+    ctx: Context,
+    route: Route,
+    buf: Vec<u8>,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client")
+            .field("route", &self.route)
+            .finish()
+    }
+}
+
+impl Client {
+    pub async fn new(r: Route, ctx: &Context) -> Result<Self> {
+        let ctx = ctx.new_detached(Address::random_local()).await?;
+        Ok(Client {
+            ctx,
+            route: r,
+            buf: Vec::new(),
+        })
+    }
+
+    pub async fn register(&mut self, req: &Enroller<'_>) -> Result<()> {
+        let req = Request::post("/register").body(req);
+        self.buf = self.request("register", "enroller_registration", &req).await?;
+        let mut d = Decoder::new(&self.buf);
+        let res = response("register", &mut d)?;
+        if res.status() == Some(Status::Ok) {
+            Ok(())
+        } else {
+            Err(error("register", &res, &mut d))
+        }
+    }
+
+    pub async fn deregister(&mut self, enroller: &KeyId) -> Result<()> {
+        let req = Request::delete(format!("/deregister/{enroller}"));
+        self.buf = self.request("deregister", None, &req).await?;
+        let mut d = Decoder::new(&self.buf);
+        let res = response("deregister", &mut d)?;
+        if res.status() == Some(Status::Ok) {
+            Ok(())
+        } else {
+            Err(error("deregister", &res, &mut d))
+        }
+    }
+
+    /// Encode request header and body (if any) and send the package to the server.
+    async fn request<T>(
+        &mut self,
+        label: &str,
+        schema: impl Into<Option<&str>>,
+        req: &RequestBuilder<'_, T>,
+    ) -> Result<Vec<u8>>
+    where
+        T: Encode<()>,
+    {
+        let mut buf = Vec::new();
+        req.encode(&mut buf)?;
+        assert_request_match(schema, &buf);
+        trace! {
+            target: "ockam_api::authenticator::direct::client",
+            id     = %req.header().id(),
+            method = ?req.header().method(),
+            path   = %req.header().path(),
+            body   = %req.header().has_body(),
+            "-> {label}"
+        };
+        let vec: Vec<u8> = self.ctx.send_and_receive(self.route.clone(), buf).await?;
+        Ok(vec)
+    }
+}
+
+/// Decode and log response header.
+fn response(label: &str, dec: &mut Decoder<'_>) -> Result<Response> {
+    let res: Response = dec.decode()?;
+    trace! {
+        target: "ockam_api::authenticators::direct::client",
+        re     = %res.re(),
+        id     = %res.id(),
+        status = ?res.status(),
+        body   = %res.has_body(),
+        "<- {label}"
+    }
+    Ok(res)
+}
+
+/// Decode, log and map response error to ockam_core error.
+fn error(label: &str, res: &Response, dec: &mut Decoder<'_>) -> ockam_core::Error {
+    if res.has_body() {
+        let err = match dec.decode::<Error>() {
+            Ok(e) => e,
+            Err(e) => return e.into(),
+        };
+        warn! {
+            target: "ockam_api::authenticators::direct::client",
+            id     = %res.id(),
+            re     = %res.re(),
+            status = ?res.status(),
+            error  = ?err.message(),
+            "<- {label}"
+        }
+        let msg = err.message().unwrap_or(label);
+        ockam_core::Error::new(Origin::Application, Kind::Protocol, msg)
+    } else {
+        ockam_core::Error::new(Origin::Application, Kind::Protocol, label)
+    }
+}
+
