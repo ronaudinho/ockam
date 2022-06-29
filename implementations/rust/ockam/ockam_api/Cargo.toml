@@ -25,8 +25,9 @@ vault-storage = ["ockam_vault/storage"]
 lmdb          = ["lmdb-rkv"]
 
 default              = ["authenticators"] # TODO: remove
-authenticators       = ["direct-authenticator"]
+authenticators       = ["direct-authenticator", "oauth2-authenticator"]
 direct-authenticator = ["lmdb", "std"]
+oauth2-authenticator = ["lmdb", "reqwest", "std", "url"]
 
 [dependencies]
 minicbor        = { version = "0.18.0", features = ["alloc", "derive"] }

@@ -217,17 +217,57 @@ state = invitation_state
 
 ;;; Signer ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-signer_signed = {
-    ?0: 5688719,
-     1: bytes,
-     2: signer_signature
-}
+signer_signed = [
+     0: bytes,
+     1: signer_signature
+]
 
-signer_signature = {
-    ?0: 3458531,
-     1: signer_key_id,
-     2: signer_signature_bytes
-}
+signer_signature = [
+     0: signer_key_id,
+     1: signer_signature_bytes
+]
 
-signer_key_id = text
+signer_key_id          = text
 signer_signature_bytes = bytes
+
+;;; OAuth2 authenticator ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+oauth2_credential_request = {
+    ?0: 7586022,
+     1: access_token
+}
+
+access_token = text
+
+oauth2_member_credential = {
+     1: timestamp,
+     2: member_id,
+    ?3: user_profile
+}
+
+timestamp    = uint
+member_id    = text
+user_profile = text
+
+;;; Direct authenticator ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+direct_credential_request = {
+    ?0: 2820828,
+     1: member_id
+}
+
+direct_member_credential = {
+     1: timestamp,
+     2: member_id,
+}
+
+enroller_registration = {
+    ?0: 1010815,
+     1: enroller
+}
+
+enroller_info = {
+     1: timestamp
+}
+
+enroller = text

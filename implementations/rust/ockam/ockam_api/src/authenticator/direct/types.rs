@@ -2,14 +2,27 @@ use crate::{CowStr, Timestamp};
 use minicbor::{Decode, Encode};
 use ockam_core::compat::borrow::Cow;
 
+#[cfg(feature = "tag")]
+use crate::TypeTag;
+
 #[derive(Debug, Decode, Encode)]
 #[rustfmt::skip]
 #[cbor(map)]
 pub struct Enroller<'a> {
+    #[cfg(feature = "tag")]
+    #[n(0)] tag: TypeTag<1010815>,
     #[b(1)] enroller: CowStr<'a>
 }
 
 impl<'a> Enroller<'a> {
+    pub fn new<S: Into<Cow<'a, str>>>(enroller: S) -> Self {
+        Enroller {
+            #[cfg(feature = "tag")]
+            tag: TypeTag,
+            enroller: CowStr(enroller.into())
+        }
+    }
+
     pub fn enroller(&self) -> &str {
         &self.enroller
     }
@@ -36,10 +49,20 @@ impl EnrollerInfo {
 #[rustfmt::skip]
 #[cbor(map)]
 pub struct CredentialRequest<'a> {
+    #[cfg(feature = "tag")]
+    #[n(0)] tag: TypeTag<2820828>,
     #[b(1)] member: CowStr<'a>
 }
 
-impl CredentialRequest<'_> {
+impl<'a> CredentialRequest<'a> {
+    pub fn new<S: Into<Cow<'a, str>>>(member: S) -> Self {
+        CredentialRequest {
+            #[cfg(feature = "tag")]
+            tag: TypeTag,
+            member: CowStr(member.into())
+        }
+    }
+
     pub fn member(&self) -> &str {
         &self.member
     }
@@ -49,8 +72,8 @@ impl CredentialRequest<'_> {
 #[rustfmt::skip]
 #[cbor(map)]
 pub struct MemberCredential<'a> {
-    #[n(1)] issued_at: Timestamp,
-    #[b(2)] member: CowStr<'a>
+    #[n(0)] issued_at: Timestamp,
+    #[b(1)] member: CowStr<'a>
 }
 
 impl<'a> MemberCredential<'a> {
