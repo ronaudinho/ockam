@@ -7,7 +7,6 @@ use crate::{
 };
 use ockam::authenticated_storage::InMemoryStorage;
 use ockam::{vault::Vault, AsyncTryClone, Context, TcpTransport};
-use ockam::identity::{Identity, TrustEveryonePolicy};
 use ockam_api::{
     auth,
     identity::IdentityService,

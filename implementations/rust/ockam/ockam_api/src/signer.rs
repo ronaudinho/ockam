@@ -58,7 +58,7 @@ impl<V: IdentityVault> Server<V> {
                     let dat = &dec.input()[dec.position() ..];
                     let kid = self.id.identifier()?;
                     let sig = self.id.create_signature(dat).await?;
-                    let bdy = Signed::new(dat, Signature::new(kid.key_id(), sig.as_ref()));
+                    let bdy = Signed::new(dat, Signature::new((&kid).into(), sig.as_ref()));
                     Response::ok(req.id()).body(bdy).to_vec()?
                 }
                 _ => response::unknown_path(&req).to_vec()?

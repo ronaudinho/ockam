@@ -1,5 +1,3 @@
-mod util;
-
 pub mod auth;
 pub mod authenticator;
 pub mod cloud;

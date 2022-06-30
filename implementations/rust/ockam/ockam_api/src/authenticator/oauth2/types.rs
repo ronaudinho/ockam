@@ -1,4 +1,5 @@
 use crate::{CowStr, Timestamp};
+use crate::authenticator::IdentityId;
 use minicbor::{Decode, Encode};
 use ockam_core::compat::borrow::Cow;
 
@@ -30,27 +31,28 @@ impl<'a> CredentialRequest<'a> {
 #[cbor(map)]
 pub struct MemberCredential<'a> {
     #[n(0)] issued_at: Timestamp,
-    #[b(1)] member: CowStr<'a>,
-    #[b(2)] profile: Option<CowStr<'a>>
+    #[b(1)] member: IdentityId<'a>,
+    #[b(2)] email: Option<CowStr<'a>>,
+    #[b(3)] email_verified: Option<bool>
 }
 
 impl<'a> MemberCredential<'a> {
-    pub fn new<S: Into<Cow<'a, str>>>(t: Timestamp, m: S) -> Self {
+    pub fn new(t: Timestamp, member: IdentityId<'a>) -> Self {
         MemberCredential {
             issued_at: t,
-            member: CowStr(m.into()),
-            profile: None
+            member,
+            email: None,
+            email_verified: None
         }
     }
     
-    pub fn with_profile<P: Into<Cow<'a, str>>>(self, p: P) -> Self {
-        MemberCredential {
-            profile: Some(CowStr(p.into())),
-            ..self
-        }
+    pub fn with_email<E: Into<Cow<'a, str>>>(mut self, email: E, is_verified: bool) -> Self {
+        self.email = Some(CowStr(email.into()));
+        self.email_verified = Some(is_verified);
+        self
     }
 
-    pub fn member(&self) -> &str {
+    pub fn member(&self) -> &IdentityId {
         &self.member
     }
 
@@ -58,8 +60,12 @@ impl<'a> MemberCredential<'a> {
         self.issued_at
     }
 
-    pub fn profile(&self) -> Option<&str> {
-        self.profile.as_deref()
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
+    }
+    
+    pub fn is_email_verified(&self) -> Option<bool> {
+        self.email_verified
     }
 }
 

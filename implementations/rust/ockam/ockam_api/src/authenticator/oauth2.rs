@@ -11,16 +11,20 @@ use ockam_core::{self, Result, Address, Route, Routed, Worker};
 use ockam_identity::{IdentitySecureChannelLocalInfo, IdentityIdentifier};
 use ockam_identity::authenticated_storage::AuthenticatedStorage;
 use ockam_node::Context;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use serde_json as json;
 use tracing::{trace, warn};
 use types::{CredentialRequest, MemberCredential};
 use url::Url;
 
+// storage scope
 const OAUTH2: &str = "oauth2";
 
 #[derive(Debug)]
 pub struct Server<S> {
     store: S,
     signer: signer::Client,
+    client: reqwest::Client,
     url: Url
 }
 
@@ -37,8 +41,8 @@ impl<S: AuthenticatedStorage> Worker for Server<S> {
 }
 
 impl<S: AuthenticatedStorage> Server<S> {
-    pub fn new(store: S, signer: signer::Client, base: Url) -> Self {
-        Server { store, signer, url: base }
+    pub fn new(store: S, signer: signer::Client, base: Url, client: reqwest::Client) -> Self {
+        Server { store, signer, url: base, client }
     }
 
     async fn on_request(&mut self, from: &IdentityIdentifier, data: &[u8]) -> Result<Vec<u8>> {
@@ -59,9 +63,18 @@ impl<S: AuthenticatedStorage> Server<S> {
             Some(Method::Post) => match req.path_segments::<2>().as_slice() {
                 ["register"] => {
                     let crq: CredentialRequest = dec.decode()?;
-                    let pro = "TODO: get user profile from auth0";
+                    let jsn = self.fetch_user_profile(crq.access_token()).await?;
                     let now = Timestamp::now().ok_or_else(invalid_sys_time)?;
-                    let crd = MemberCredential::new(now, from.key_id()).with_profile(pro);
+                    let crd = {
+                        let mut mc = MemberCredential::new(now, from.into());
+                        if let Some(e) = jsn.get("email").and_then(|e| e.as_str()) {
+                            let v = jsn.get("email_verified")
+                                .and_then(|b| b.as_bool())
+                                .unwrap_or(false);
+                            mc = mc.with_email(e, v)
+                        }
+                        mc
+                    };
                     let vec = minicbor::to_vec(&crd)?;
                     let sig = self.signer.sign(&vec).await?;
                     let vec = minicbor::to_vec(&sig)?;
@@ -86,10 +99,33 @@ impl<S: AuthenticatedStorage> Server<S> {
         
         Ok(res)
     }
+    
+    async fn fetch_user_profile(&self, token: &str) -> Result<json::Value> {
+        let res = self.client.get(self.url.as_str())
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header(CONTENT_TYPE, "application/json")
+            .send()
+            .await
+            .map_err(http_request_error)?;
+        if !res.status().is_success() {
+            return Err(ockam_core::Error::new(Origin::Application, Kind::Invalid, "todo!"))
+        }
+        let body = res.bytes().await.map_err(http_request_error)?;
+        let json = json::from_slice(&body).map_err(json_error)?;
+        Ok(json)
+    }
 }
 
 fn invalid_sys_time() -> ockam_core::Error {
     ockam_core::Error::new(Origin::Node, Kind::Internal, "invalid system time")
+}
+
+fn http_request_error(e: reqwest::Error) -> ockam_core::Error {
+    ockam_core::Error::new(Origin::Application, Kind::Io, e)
+}
+
+fn json_error(e: json::Error) -> ockam_core::Error {
+    ockam_core::Error::new(Origin::Application, Kind::Io, e)
 }
 
 pub struct Client {

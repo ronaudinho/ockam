@@ -84,11 +84,11 @@ impl<S: AuthenticatedStorage> Server<General, S> {
                     if let Some(data) = self.store.get(ENROLLER, from.key_id()).await? {
                         minicbor::decode::<EnrollerInfo>(&data)?;
                         let now = Timestamp::now().ok_or_else(invalid_sys_time)?;
-                        let crd = MemberCredential::new(now, crq.member());
+                        let crd = MemberCredential::new(now, crq.member().clone());
                         let vec = minicbor::to_vec(&crd)?;
                         let sig = self.signer.sign(&vec).await?;
                         let vec = minicbor::to_vec(&sig)?;
-                        self.store.set(crq.member(), DIRECT.to_string(), vec).await?;
+                        self.store.set(crq.member().as_str(), DIRECT.to_string(), vec).await?;
                         Response::ok(req.id()).body(&sig).to_vec()?
                     } else {
                         warn! {
@@ -148,7 +148,7 @@ impl<S: AuthenticatedStorage> Server<Admin, S> {
                     let n = Timestamp::now().ok_or_else(invalid_sys_time)?;
                     let i = EnrollerInfo::new(n);
                     let b = minicbor::to_vec(&i)?;
-                    self.store.set(ENROLLER, e.enroller().to_string(), b).await?;
+                    self.store.set(ENROLLER, e.enroller().as_str().into(), b).await?;
                     Response::ok(req.id()).to_vec()?
                 }
                 _ => response::unknown_path(&req).to_vec()?

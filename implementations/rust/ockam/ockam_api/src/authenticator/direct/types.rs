@@ -1,6 +1,6 @@
-use crate::{CowStr, Timestamp};
+use crate::Timestamp;
+use crate::authenticator::IdentityId;
 use minicbor::{Decode, Encode};
-use ockam_core::compat::borrow::Cow;
 
 #[cfg(feature = "tag")]
 use crate::TypeTag;
@@ -11,19 +11,19 @@ use crate::TypeTag;
 pub struct Enroller<'a> {
     #[cfg(feature = "tag")]
     #[n(0)] tag: TypeTag<1010815>,
-    #[b(1)] enroller: CowStr<'a>
+    #[b(1)] enroller: IdentityId<'a>
 }
 
 impl<'a> Enroller<'a> {
-    pub fn new<S: Into<Cow<'a, str>>>(enroller: S) -> Self {
+    pub fn new(enroller: IdentityId<'a>) -> Self {
         Enroller {
             #[cfg(feature = "tag")]
             tag: TypeTag,
-            enroller: CowStr(enroller.into())
+            enroller
         }
     }
 
-    pub fn enroller(&self) -> &str {
+    pub fn enroller(&self) -> &IdentityId {
         &self.enroller
     }
 }
@@ -51,19 +51,19 @@ impl EnrollerInfo {
 pub struct CredentialRequest<'a> {
     #[cfg(feature = "tag")]
     #[n(0)] tag: TypeTag<2820828>,
-    #[b(1)] member: CowStr<'a>
+    #[b(1)] member: IdentityId<'a>
 }
 
 impl<'a> CredentialRequest<'a> {
-    pub fn new<S: Into<Cow<'a, str>>>(member: S) -> Self {
+    pub fn new(member: IdentityId<'a>) -> Self {
         CredentialRequest {
             #[cfg(feature = "tag")]
             tag: TypeTag,
-            member: CowStr(member.into())
+            member
         }
     }
 
-    pub fn member(&self) -> &str {
+    pub fn member(&self) -> &IdentityId {
         &self.member
     }
 }
@@ -73,15 +73,15 @@ impl<'a> CredentialRequest<'a> {
 #[cbor(map)]
 pub struct MemberCredential<'a> {
     #[n(0)] issued_at: Timestamp,
-    #[b(1)] member: CowStr<'a>
+    #[b(1)] member: IdentityId<'a>
 }
 
 impl<'a> MemberCredential<'a> {
-    pub fn new<S: Into<Cow<'a, str>>>(t: Timestamp, m: S) -> Self {
-        MemberCredential { issued_at: t, member: CowStr(m.into()) }
+    pub fn new(t: Timestamp, member: IdentityId<'a>) -> Self {
+        MemberCredential { issued_at: t, member }
     }
 
-    pub fn member(&self) -> &str {
+    pub fn member(&self) -> &IdentityId {
         &self.member
     }
 
