@@ -215,4 +215,19 @@ invitation_id = text
 inviter = text
 state = invitation_state
 
+;;; Signer ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+signer_signed = {
+    ?0: 5688719,
+     1: bytes,
+     2: signer_signature
+}
+
+signer_signature = {
+    ?0: 3458531,
+     1: signer_key_id,
+     2: signer_signature_bytes
+}
+
+signer_key_id = text
+signer_signature_bytes = bytes
