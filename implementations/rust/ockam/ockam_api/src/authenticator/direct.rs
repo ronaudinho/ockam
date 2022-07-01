@@ -2,6 +2,7 @@ pub mod types;
 
 use core::marker::PhantomData;
 use crate::assert_request_match;
+use crate::authenticator::IdentityId;
 use crate::{Error, Timestamp, Method, Request, RequestBuilder, Response, Status};
 use crate::signer::{self, types::Signed};
 use crate::util::response;
@@ -12,7 +13,6 @@ use ockam_core::{self, Result, Address, Route, Routed, Worker};
 use ockam_identity::{IdentitySecureChannelLocalInfo, IdentityIdentifier};
 use ockam_identity::authenticated_storage::AuthenticatedStorage;
 use ockam_node::Context;
-use ockam_vault::KeyId;
 use tracing::{trace, warn};
 use types::{CredentialRequest, MemberCredential, Enroller, EnrollerInfo};
 
@@ -218,8 +218,8 @@ impl Client {
         }
     }
 
-    pub async fn deregister(&mut self, enroller: &KeyId) -> Result<()> {
-        let req = Request::delete(format!("/deregister/{enroller}"));
+    pub async fn deregister(&mut self, enroller: &IdentityId<'_>) -> Result<()> {
+        let req = Request::delete(format!("/deregister/{}", enroller.as_str()));
         self.buf = self.request("deregister", None, &req).await?;
         let mut d = Decoder::new(&self.buf);
         let res = response("deregister", &mut d)?;

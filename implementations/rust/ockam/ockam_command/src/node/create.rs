@@ -1,5 +1,6 @@
 use clap::Args;
 use std::{env::current_exe, fs::OpenOptions, process::Command, time::Duration};
+use std::net::IpAddr;
 
 use crate::{
     node::show::query_status,
@@ -9,9 +10,11 @@ use ockam::authenticated_storage::InMemoryStorage;
 use ockam::{vault::Vault, AsyncTryClone, Context, TcpTransport};
 use ockam_api::{
     auth,
+    authenticator,
     identity::IdentityService,
     nodes::types::{TransportMode, TransportType},
     nodes::{NodeMan, NODEMAN_ADDR},
+    signer
 };
 
 #[derive(Clone, Debug, Args)]
@@ -23,14 +26,23 @@ pub struct CreateCommand {
     /// Spawn a node in the background.
     #[clap(display_order = 900, long, short)]
     spawn: bool,
+    
+    /// Listen address.
+    #[clap(default_value_t = IpAddr::from([0, 0, 0, 0]), long)]
+    address: IpAddr,
 
     /// Specify the API port
     #[clap(default_value_t = DEFAULT_TCP_PORT, long, short)]
     port: u16,
 
+    /// Start authenticators.
+    #[clap(long, short)]
+    authenticator: Vec<String>,
+
     #[clap(long, hide = true)]
     no_watchdog: bool,
 }
+
 impl CreateCommand {
     pub fn run(cfg: &OckamConfig, command: CreateCommand) {
         if command.spawn {
@@ -123,13 +135,42 @@ impl CreateCommand {
 }
 
 async fn setup(ctx: Context, (c, cfg): (CreateCommand, OckamConfig)) -> anyhow::Result<()> {
+    const SIGNER: &str = "signer";
+    
     let tcp = TcpTransport::create(&ctx).await?;
-    let bind = format!("0.0.0.0:{}", c.port);
+    let bind = format!("{}:{}", c.address, c.port);
     tcp.listen(&bind).await?;
 
     let s = InMemoryStorage::new();
-    ctx.start_worker("authenticated", auth::Server::new(s))
-        .await?;
+
+    ctx.start_worker("authenticated", auth::Server::new(s.clone())).await?;
+    
+    if !c.authenticator.is_empty() {
+        let id = crate::old::identity::load_or_create_identity(&ctx, false).await?;
+        ctx.start_worker(SIGNER, signer::Server::new(id)).await?
+    }
+    
+    for a in &c.authenticator {
+        match a.to_ascii_lowercase().as_str() {
+            "oauth2" => {
+                let clt = signer::Client::new(SIGNER.into(), &ctx).await?;
+                let url = "https://dev-w5hdnpc2.us.auth0.com/userinfo".try_into()?; // TODO
+                let srv = authenticator::oauth2::Server::new(s.clone(), clt, url);
+                ctx.start_worker("oauth2-auth", srv).await?
+            }
+            "direct" => {
+                let clt = signer::Client::new(SIGNER.into(), &ctx).await?;
+                let srv = authenticator::direct::Server::new(s.clone(), clt);
+                ctx.start_worker("direct-auth", srv).await?
+            }
+            "direct-admin" => {
+                let clt = signer::Client::new(SIGNER.into(), &ctx).await?;
+                let srv = authenticator::direct::Server::admin(s.clone(), clt);
+                ctx.start_worker("direct-auth-admin", srv).await?
+            }
+            _ => eprintln!("unknown authenticator: {a}")
+        }
+    }
 
     // TODO: put that behind some flag or configuration
     let vault = Vault::create();

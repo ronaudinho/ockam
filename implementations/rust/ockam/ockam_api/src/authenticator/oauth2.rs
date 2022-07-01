@@ -41,8 +41,8 @@ impl<S: AuthenticatedStorage> Worker for Server<S> {
 }
 
 impl<S: AuthenticatedStorage> Server<S> {
-    pub fn new(store: S, signer: signer::Client, base: Url, client: reqwest::Client) -> Self {
-        Server { store, signer, url: base, client }
+    pub fn new(store: S, signer: signer::Client, base: Url) -> Self {
+        Server { store, signer, url: base, client: reqwest::Client::new() }
     }
 
     async fn on_request(&mut self, from: &IdentityIdentifier, data: &[u8]) -> Result<Vec<u8>> {
