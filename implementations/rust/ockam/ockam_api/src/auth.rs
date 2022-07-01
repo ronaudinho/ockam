@@ -2,17 +2,15 @@ pub mod types;
 
 use crate::{assert_request_match, assert_response_match};
 use crate::{Error, Method, Request, RequestBuilder, Response, Status};
-use core::convert::Infallible;
+use crate::util::response;
 use core::fmt;
-use minicbor::encode::Write;
 use minicbor::{Decoder, Encode};
-use ockam_core::compat::error::Error as StdError;
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, Address, Route, Routed, Worker};
+use ockam_core::{self, Address, Result, Route, Routed, Worker};
 use ockam_identity::authenticated_storage::AuthenticatedStorage;
 use ockam_node::Context;
 use tracing::{trace, warn};
-use types::{Attribute, Attributes};
+use types::Attribute;
 
 /// Auth API server.
 #[derive(Debug)]
@@ -25,14 +23,9 @@ impl<S: AuthenticatedStorage> Worker for Server<S> {
     type Context = Context;
     type Message = Vec<u8>;
 
-    async fn handle_message(
-        &mut self,
-        ctx: &mut Context,
-        msg: Routed<Self::Message>,
-    ) -> ockam_core::Result<()> {
-        let mut buf = Vec::new();
-        self.on_request(msg.as_body(), &mut buf).await?;
-        ctx.send(msg.return_route(), buf).await
+    async fn handle_message(&mut self, c: &mut Context, m: Routed<Self::Message>) -> Result<()> {
+        let r = self.on_request(m.as_body()).await?;
+        c.send(m.return_route(), r).await
     }
 }
 
@@ -41,10 +34,7 @@ impl<S: AuthenticatedStorage> Server<S> {
         Server { store: s }
     }
 
-    async fn on_request<W>(&mut self, data: &[u8], buf: W) -> Result<(), AuthError>
-    where
-        W: Write<Error = Infallible>,
-    {
+    async fn on_request(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         let mut dec = Decoder::new(data);
         let req: Request = dec.decode()?;
 
@@ -57,78 +47,23 @@ impl<S: AuthenticatedStorage> Server<S> {
             "request"
         }
 
-        match req.method() {
+        let res = match req.method() {
             Some(Method::Get) => match req.path_segments::<5>().as_slice() {
-                //TODO: there are other levels than control_plane. Plus,
-                //      I'm unsure if this level is even useful on the rust node?
-                ["v0", "control_plane", id, key] => {
-                    if let Some(a) = self.store.get(id, key).await.map_err(AuthError::storage)? {
+                ["authenticated", id, "attribute", key] => {
+                    if let Some(a) = self.store.get(id, key).await? {
                         Response::ok(req.id())
                             .body(Attribute::new(&a))
-                            .encode(buf)?
+                            .to_vec()?
                     } else {
-                        Response::not_found(req.id()).encode(buf)?
+                        Response::not_found(req.id()).to_vec()?
                     }
                 }
-                _ => {
-                    let error = Error::new(req.path())
-                        .with_method(Method::Post)
-                        .with_message("unknown path");
-                    Response::bad_request(req.id()).body(error).encode(buf)?
-                }
+                _ => response::unknown_path(&req).to_vec()?
             },
-            Some(Method::Post) => match req.path_segments::<4>().as_slice() {
-                ["v0", "control_plane", id] => {
-                    if req.has_body() {
-                        let ca: Attributes = dec.decode()?;
-                        for (k, v) in ca.attrs() {
-                            self.store
-                                .set(id, k.to_string(), v.to_vec())
-                                .await
-                                .map_err(AuthError::storage)?
-                        }
-                        Response::ok(req.id()).encode(buf)?
-                    } else {
-                        let error = Error::new(req.path())
-                            .with_method(Method::Post)
-                            .with_message("missing request body");
-                        Response::bad_request(req.id()).body(error).encode(buf)?
-                    }
-                }
-                _ => {
-                    let error = Error::new(req.path())
-                        .with_method(Method::Post)
-                        .with_message("unknown path");
-                    Response::bad_request(req.id()).body(error).encode(buf)?
-                }
-            },
-            Some(Method::Delete) => match req.path_segments::<5>().as_slice() {
-                ["v0", "control_plane", id, key] => {
-                    self.store.del(id, key).await.map_err(AuthError::storage)?;
-                    Response::ok(req.id()).encode(buf)?
-                }
-                _ => {
-                    let error = Error::new(req.path())
-                        .with_method(Method::Post)
-                        .with_message("unknown path");
-                    Response::bad_request(req.id()).body(error).encode(buf)?
-                }
-            },
-            Some(m) => {
-                let error = Error::new(req.path()).with_method(m);
-                Response::builder(req.id(), Status::MethodNotAllowed)
-                    .body(error)
-                    .encode(buf)?
-            }
-            None => {
-                let error = Error::new(req.path()).with_message("unknown method");
-                Response::not_implemented(req.id())
-                    .body(error)
-                    .encode(buf)?
-            }
-        }
+            _ => response::invalid_method(&req).to_vec()?
+        };
 
-        Ok(())
+        Ok(res)
     }
 }
 
@@ -157,21 +92,8 @@ impl Client {
         })
     }
 
-    pub async fn set(&mut self, id: &str, attrs: &Attributes<'_>) -> ockam_core::Result<()> {
-        let req = Request::post(format!("v0/control_plane/{id}")).body(attrs);
-        self.buf = self.request("set attributes", "attributes", &req).await?;
-        assert_response_match(None, &self.buf);
-        let mut d = Decoder::new(&self.buf);
-        let res = response("set attributes", &mut d)?;
-        if res.status() == Some(Status::Ok) {
-            Ok(())
-        } else {
-            Err(error("set attributes", &res, &mut d))
-        }
-    }
-
-    pub async fn get(&mut self, id: &str, attr: &str) -> ockam_core::Result<Option<&[u8]>> {
-        let req = Request::get(format!("v0/control_plane/{id}/{attr}"));
+    pub async fn get(&mut self, id: &str, attr: &str) -> Result<Option<&[u8]>> {
+        let req = Request::get(format!("/authenticated/{id}/attribute/{attr}"));
         self.buf = self.request("get attribute", None, &req).await?;
         let mut d = Decoder::new(&self.buf);
         let res = response("get attribute", &mut d)?;
@@ -186,26 +108,13 @@ impl Client {
         }
     }
 
-    pub async fn del(&mut self, id: &str, attr: &str) -> ockam_core::Result<()> {
-        let req = Request::delete(format!("/v0/control_plane/{id}/{attr}"));
-        self.buf = self.request("del attribute", None, &req).await?;
-        assert_response_match(None, &self.buf);
-        let mut d = Decoder::new(&self.buf);
-        let res = response("del attribute", &mut d)?;
-        if res.status() == Some(Status::Ok) {
-            Ok(())
-        } else {
-            Err(error("del attribute", &res, &mut d))
-        }
-    }
-
     /// Encode request header and body (if any) and send the package to the server.
     async fn request<T>(
         &mut self,
         label: &str,
         schema: impl Into<Option<&str>>,
         req: &RequestBuilder<'_, T>,
-    ) -> ockam_core::Result<Vec<u8>>
+    ) -> Result<Vec<u8>>
     where
         T: Encode<()>,
     {
@@ -226,7 +135,7 @@ impl Client {
 }
 
 /// Decode and log response header.
-fn response(label: &str, dec: &mut Decoder<'_>) -> ockam_core::Result<Response> {
+fn response(label: &str, dec: &mut Decoder<'_>) -> Result<Response> {
     let res: Response = dec.decode()?;
     trace! {
         target: "ockam_api::auth::client",
@@ -258,66 +167,5 @@ fn error(label: &str, res: &Response, dec: &mut Decoder<'_>) -> ockam_core::Erro
         ockam_core::Error::new(Origin::Application, Kind::Protocol, msg)
     } else {
         ockam_core::Error::new(Origin::Application, Kind::Protocol, label)
-    }
-}
-
-#[derive(Debug)]
-pub struct AuthError(ErrorImpl);
-
-impl AuthError {
-    fn storage<E: StdError + Send + Sync + 'static>(e: E) -> Self {
-        AuthError(ErrorImpl::Storage(Box::new(e)))
-    }
-}
-
-#[derive(Debug)]
-enum ErrorImpl {
-    Decode(minicbor::decode::Error),
-    Encode(minicbor::encode::Error<Infallible>),
-    Storage(Box<dyn StdError + Send + Sync>),
-}
-
-impl fmt::Display for AuthError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            ErrorImpl::Encode(e) => e.fmt(f),
-            ErrorImpl::Decode(e) => e.fmt(f),
-            ErrorImpl::Storage(e) => e.fmt(f),
-        }
-    }
-}
-
-impl ockam_core::compat::error::Error for AuthError {
-    #[cfg(feature = "std")]
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.0 {
-            ErrorImpl::Decode(e) => Some(e),
-            ErrorImpl::Encode(e) => Some(e),
-            ErrorImpl::Storage(e) => Some(&**e),
-        }
-    }
-}
-
-impl From<minicbor::decode::Error> for AuthError {
-    fn from(e: minicbor::decode::Error) -> Self {
-        AuthError(ErrorImpl::Decode(e))
-    }
-}
-
-impl From<minicbor::encode::Error<Infallible>> for AuthError {
-    fn from(e: minicbor::encode::Error<Infallible>) -> Self {
-        AuthError(ErrorImpl::Encode(e))
-    }
-}
-
-impl From<AuthError> for ockam_core::Error {
-    fn from(e: AuthError) -> Self {
-        ockam_core::Error::new(Origin::Application, Kind::Invalid, e)
-    }
-}
-
-impl From<Infallible> for AuthError {
-    fn from(_: Infallible) -> Self {
-        unreachable!()
     }
 }

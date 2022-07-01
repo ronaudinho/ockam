@@ -3,7 +3,6 @@ use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
 use ockam::{Context, TcpTransport};
 use ockam_api::auth;
-use ockam_api::auth::types::Attributes;
 use ockam_multiaddr::MultiAddr;
 
 #[derive(Clone, Debug, Args)]
@@ -14,20 +13,6 @@ pub struct AuthenticatedCommand {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum AuthenticatedSubcommand {
-    /// Set authenticated attributes.
-    Set {
-        /// Address to connect to.
-        #[clap(long)]
-        addr: MultiAddr,
-
-        /// Subject identifier
-        #[clap(long, validator(non_empty))]
-        id: String,
-
-        /// Attributes (use '=' to separate key from value).
-        #[clap(value_delimiter('='))]
-        attrs: Vec<String>,
-    },
     /// Get attribute value.
     Get {
         /// Address to connect to.
@@ -41,21 +26,7 @@ pub enum AuthenticatedSubcommand {
         /// Attribute key.
         #[clap(validator(non_empty))]
         key: String,
-    },
-    /// Delete attribute
-    Del {
-        /// Address to connect to.
-        #[clap(long)]
-        addr: MultiAddr,
-
-        /// Subject identifier
-        #[clap(long, validator(non_empty))]
-        id: String,
-
-        /// Attribute key.
-        #[clap(validator(non_empty))]
-        key: String,
-    },
+    }
 }
 
 impl AuthenticatedCommand {
@@ -67,26 +38,10 @@ impl AuthenticatedCommand {
 async fn run_impl(mut ctx: Context, cmd: AuthenticatedSubcommand) -> anyhow::Result<()> {
     TcpTransport::create(&ctx).await?;
     match &cmd {
-        AuthenticatedSubcommand::Set { addr, id, attrs } => {
-            let mut c = client(addr, &ctx).await?;
-            let mut a = Attributes::new();
-            for entry in attrs.chunks(2) {
-                if let [k, v] = entry {
-                    a.put(k, v.as_bytes());
-                } else {
-                    return Err(anyhow!("{entry:?} is not a key-value pair"));
-                }
-            }
-            c.set(id, &a).await?
-        }
         AuthenticatedSubcommand::Get { addr, id, key } => {
             let mut c = client(addr, &ctx).await?;
             let val = c.get(id, key).await?;
             println!("{val:?}")
-        }
-        AuthenticatedSubcommand::Del { addr, id, key } => {
-            let mut c = client(addr, &ctx).await?;
-            c.del(id, key).await?;
         }
     }
     ctx.stop().await?;
