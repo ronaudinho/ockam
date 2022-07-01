@@ -166,7 +166,6 @@ impl Client {
         if res.status() == Some(Status::Ok) {
             Ok(())
         } else {
-            dbg!(&res);
             Err(error("set attributes", &res, &mut d))
         }
     }
@@ -240,7 +239,7 @@ fn response(label: &str, dec: &mut Decoder<'_>) -> ockam_core::Result<Response> 
     Ok(res)
 }
 
-/// Decode, log and mape response error to ockam_core error.
+/// Decode, log and map response error to ockam_core error.
 fn error(label: &str, res: &Response, dec: &mut Decoder<'_>) -> ockam_core::Error {
     if res.has_body() {
         let err = match dec.decode::<Error>() {

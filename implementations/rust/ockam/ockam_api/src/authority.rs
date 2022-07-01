@@ -1,17 +1,16 @@
-mod types;
+pub mod types;
 
+use crate::{assert_request_match, assert_response_match};
 use crate::{Error, Method, Request, RequestBuilder, Response, Status};
-use core::convert::Infallible;
 use core::fmt;
 use minicbor::{Decoder, Encode};
 use ockam::authenticated_storage::AuthenticatedStorage;
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, vault, Address, Route, Routed, Worker};
+use ockam_core::{self, vault, Result, Address, Route, Routed, Worker};
 use ockam_identity::{Identity, IdentityIdentifier, IdentitySecureChannelLocalInfo, IdentityVault};
 use ockam_node::Context;
-use std::borrow::Cow;
 use tracing::{trace, warn};
-use types::{CredentialRequest, Membership, Oauth2, Signature, Timestamp};
+use types::{CredentialRequest, Membership, Oauth2, Signature, Signed, Timestamp};
 use url::Url;
 
 pub struct Config<V: IdentityVault, S: AuthenticatedStorage> {
@@ -33,11 +32,7 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Worker for Server<V, S> {
     type Context = Context;
     type Message = Vec<u8>;
 
-    async fn handle_message(
-        &mut self,
-        ctx: &mut Context,
-        msg: Routed<Self::Message>,
-    ) -> ockam_core::Result<()> {
+    async fn handle_message(&mut self, ctx: &mut Context, msg: Routed<Self::Message>) -> Result<()> {
         let info = IdentitySecureChannelLocalInfo::find_info(msg.local_message())?;
         let they = info.their_identity_id();
         let res = self.on_request(they, msg.as_body()).await?;
@@ -50,7 +45,7 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
         Server { config: c }
     }
     
-    async fn on_request(&mut self, they: &IdentityIdentifier, data: &[u8]) -> Result<Vec<u8>, AuthorityError> {
+    async fn on_request(&mut self, they: &IdentityIdentifier, data: &[u8]) -> Result<Vec<u8>> {
         let mut dec = Decoder::new(data);
         let req: Request = dec.decode()?;
 
@@ -67,20 +62,22 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
         let res = match req.method() {
             Some(Method::Post) => match req.path_segments::<2>().as_slice() {
                 ["sign"] => match dec.decode()? {
-                    CredentialRequest::Oauth2 { dat, sig } => {
+                    CredentialRequest::Oauth2 { data, signature } => {
                         if let Some(_cfg) = &self.config.auth0 {
-                            self.verify(&dat, &sig).await?;
-                            let pubkey = self.resolve_key(sig.key_id()).await?;
-                            let _tkn: Oauth2 = minicbor::decode(&dat)?;
+                            self.verify(&data, &signature).await?;
+                            let pubkey = self.resolve_key(signature.key_id()).await?;
+                            let _tkn: Oauth2 = minicbor::decode(&data)?;
                             let attrs = "TODO: get user profile from auth0";
-                            let now = Timestamp::now()
-                                .ok_or_else(|| AuthorityError::invalid_sys_time())?;
+                            let now = Timestamp::now().ok_or_else(|| invalid_sys_time())?;
                             let cred = {
-                                let m = Membership::new(now, sig.key_id(), Cow::Borrowed(&pubkey))
+                                let m = Membership::new(now, signature.key_id(), pubkey)
                                     .with_attributes(attrs);
                                 minicbor::to_vec(&m)?
                             };
-                            Response::ok(req.id()).body(cred).to_vec()?
+                            let kid = self.config.id.get_root_secret_key().await?;
+                            let sig = self.config.id.vault().sign(&kid, &cred).await?;
+                            let body = Signed::new(&cred, Signature::new(&kid, sig.as_ref()));
+                            Response::ok(req.id()).body(body).to_vec()?
                         } else {
                             let error = Error::new(req.path())
                                 .with_method(Method::Post)
@@ -88,12 +85,12 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
                             Response::not_implemented(req.id()).body(error).to_vec()?
                         }
                     }
-                    CredentialRequest::CreateSpace { dat, sig } => {
-                        self.verify(&dat, &sig).await?;
+                    CredentialRequest::CreateSpace { data, signature } => {
+                        self.verify(&data, &signature).await?;
                         todo!()
                     }
-                    CredentialRequest::CreateProject { dat, sig } => {
-                        self.verify(&dat, &sig).await?;
+                    CredentialRequest::CreateProject { data, signature } => {
+                        self.verify(&data, &signature).await?;
                         todo!()
                     }
                 }
@@ -110,115 +107,134 @@ impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
         Ok(res)
     }
 
-    async fn verify(&self, data: &[u8], sig: &Signature<'_>) -> Result<(), AuthorityError> {
-        let id = sig.key_id().try_into().map_err(AuthorityError::invalid_key_id)?;
+    async fn verify(&self, data: &[u8], sig: &Signature<'_>) -> Result<()> {
+        let id = sig.key_id().try_into()?;
         let sg = vault::Signature::new(sig.signature().to_vec()); // TODO: avoid allocation
-        let ok = self.config.id.verify_signature(&sg, &id, data, &self.config.store)
-            .await
-            .map_err(AuthorityError::other)?;
-        if ok {
+        if self.config.id.verify_signature(&sg, &id, data, &self.config.store).await? {
             Ok(())
         } else {
-            Err(AuthorityError::invalid_signature())
+            Err(invalid_signature())
         }
     }
 
-    async fn resolve_key(&self, key_id: &str) -> Result<vault::PublicKey, AuthorityError> {
-        let id = key_id.try_into().map_err(AuthorityError::invalid_key_id)?;
-        if let Some(id) = self.config.id.get_known_identity(&id, &self.config.store)
-            .await
-            .map_err(AuthorityError::other)?
-        {
-            return id.get_root_public_key().map_err(AuthorityError::other)
+    async fn resolve_key(&self, key_id: &str) -> Result<vault::PublicKey> {
+        let id = key_id.try_into()?;
+        if let Some(id) = self.config.id.get_known_identity(&id, &self.config.store).await? {
+            return id.get_root_public_key()
         }
-        Err(AuthorityError::unknown_identity(key_id))
+        Err(unknown_identity(key_id))
     }
 }
 
-#[derive(Debug)]
-pub struct AuthorityError(ErrorImpl);
-
-impl AuthorityError {
-    fn invalid_signature() -> Self {
-        AuthorityError(ErrorImpl::InvalidSignature)
-    }
-
-    fn invalid_key_id(e: ockam_core::Error) -> Self {
-        AuthorityError(ErrorImpl::InvalidKeyId(e))
-    }
-    
-    fn invalid_sys_time() -> Self {
-        AuthorityError(ErrorImpl::InvalidSystemTime)
-    }
-    
-    fn unknown_identity(key_id: &str) -> Self {
-        AuthorityError(ErrorImpl::UnknownId(key_id.to_string()))
-    }
-
-    fn other(e: ockam_core::Error) -> Self {
-        AuthorityError(ErrorImpl::Other(e))
-    }
+fn invalid_signature() -> ockam_core::Error {
+   ockam_core::Error::new(Origin::Application, Kind::Invalid, "invalid signature")
 }
 
-#[derive(Debug)]
-enum ErrorImpl {
-    Decode(minicbor::decode::Error),
-    Encode(minicbor::encode::Error<Infallible>),
-    InvalidKeyId(ockam_core::Error),
-    Other(ockam_core::Error),
-    InvalidSignature,
-    InvalidSystemTime,
-    UnknownId(String)
+fn unknown_identity(id: &str) -> ockam_core::Error {
+   ockam_core::Error::new(Origin::Application, Kind::Invalid, format!("unknown identity {id}"))
 }
 
-impl fmt::Display for AuthorityError {
+fn invalid_sys_time() -> ockam_core::Error {
+   ockam_core::Error::new(Origin::Node, Kind::Internal, "invalid system time")
+}
+
+pub struct Client {
+    ctx: Context,
+    route: Route,
+    buf: Vec<u8>,
+}
+
+impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            ErrorImpl::Encode(e) => e.fmt(f),
-            ErrorImpl::Decode(e) => e.fmt(f),
-            ErrorImpl::InvalidKeyId(e) => e.fmt(f),
-            ErrorImpl::Other(e) => e.fmt(f),
-            ErrorImpl::InvalidSignature => f.write_str("invalid signature"),
-            ErrorImpl::InvalidSystemTime => f.write_str("invalid system time"),
-            ErrorImpl::UnknownId(id) => write!(f, "unknown key id: {id}")
+        f.debug_struct("Client")
+            .field("route", &self.route)
+            .finish()
+    }
+}
+
+impl Client {
+    pub async fn new(r: Route, ctx: &Context) -> Result<Self> {
+        let ctx = ctx.new_detached(Address::random_local()).await?;
+        Ok(Client {
+            ctx,
+            route: r,
+            buf: Vec::new(),
+        })
+    }
+
+    pub async fn sign(&mut self, req: &CredentialRequest<'_>) -> Result<Signed<'_>> {
+        let req = Request::post("/sign").body(req);
+        self.buf = self.request("sign", "todo", &req).await?;
+        let mut d = Decoder::new(&self.buf);
+        let res = response("sign", &mut d)?;
+        if res.status() == Some(Status::Ok) {
+            // TODO: assert_response_match("todo", &self.buf);
+            let a: Signed = d.decode()?;
+            Ok(a)
+        } else {
+            Err(error("sign", &res, &mut d))
         }
     }
+
+    /// Encode request header and body (if any) and send the package to the server.
+    async fn request<T>(
+        &mut self,
+        label: &str,
+        schema: impl Into<Option<&str>>,
+        req: &RequestBuilder<'_, T>,
+    ) -> Result<Vec<u8>>
+    where
+        T: Encode<()>,
+    {
+        let mut buf = Vec::new();
+        req.encode(&mut buf)?;
+        // TODO: assert_request_match(schema, &buf);
+        trace! {
+            target: "ockam_api::authority::client",
+            id     = %req.header().id(),
+            method = ?req.header().method(),
+            path   = %req.header().path(),
+            body   = %req.header().has_body(),
+            "-> {label}"
+        };
+        let vec: Vec<u8> = self.ctx.send_and_receive(self.route.clone(), buf).await?;
+        Ok(vec)
+    }
 }
 
-impl std::error::Error for AuthorityError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.0 {
-            ErrorImpl::Decode(e) => Some(e),
-            ErrorImpl::Encode(e) => Some(e),
-            ErrorImpl::InvalidKeyId(e) => Some(e),
-            ErrorImpl::Other(e) => Some(e),
-            ErrorImpl::InvalidSignature => None,
-            ErrorImpl::InvalidSystemTime => None,
-            ErrorImpl::UnknownId(_) => None
+/// Decode and log response header.
+fn response(label: &str, dec: &mut Decoder<'_>) -> Result<Response> {
+    let res: Response = dec.decode()?;
+    trace! {
+        target: "ockam_api::authority::client",
+        re     = %res.re(),
+        id     = %res.id(),
+        status = ?res.status(),
+        body   = %res.has_body(),
+        "<- {label}"
+    }
+    Ok(res)
+}
+
+/// Decode, log and map response error to ockam_core error.
+fn error(label: &str, res: &Response, dec: &mut Decoder<'_>) -> ockam_core::Error {
+    if res.has_body() {
+        let err = match dec.decode::<Error>() {
+            Ok(e) => e,
+            Err(e) => return e.into(),
+        };
+        warn! {
+            target: "ockam_api::authority::client",
+            id     = %res.id(),
+            re     = %res.re(),
+            status = ?res.status(),
+            error  = ?err.message(),
+            "<- {label}"
         }
+        let msg = err.message().unwrap_or(label);
+        ockam_core::Error::new(Origin::Application, Kind::Protocol, msg)
+    } else {
+        ockam_core::Error::new(Origin::Application, Kind::Protocol, label)
     }
 }
 
-impl From<minicbor::decode::Error> for AuthorityError {
-    fn from(e: minicbor::decode::Error) -> Self {
-        AuthorityError(ErrorImpl::Decode(e))
-    }
-}
-
-impl From<minicbor::encode::Error<Infallible>> for AuthorityError {
-    fn from(e: minicbor::encode::Error<Infallible>) -> Self {
-        AuthorityError(ErrorImpl::Encode(e))
-    }
-}
-
-impl From<AuthorityError> for ockam_core::Error {
-    fn from(e: AuthorityError) -> Self {
-        ockam_core::Error::new(Origin::Application, Kind::Invalid, e)
-    }
-}
-
-impl From<Infallible> for AuthorityError {
-    fn from(_: Infallible) -> Self {
-        unreachable!()
-    }
-}
