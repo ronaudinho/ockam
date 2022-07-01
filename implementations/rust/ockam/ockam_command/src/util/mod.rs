@@ -69,7 +69,7 @@ where
     F: FnOnce(ockam::Context, A) -> Fut + Send + Sync + 'static,
     Fut: core::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
-    let (ctx, mut executor) = NodeBuilder::without_access_control().build();
+    let (ctx, mut executor) = NodeBuilder::without_access_control().no_logging().build();
     let res = executor.execute(async move {
         if let Err(e) = f(ctx, a).await {
             eprintln!("Error {:?}", e);

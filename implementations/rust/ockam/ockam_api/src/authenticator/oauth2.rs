@@ -65,7 +65,6 @@ impl<S: AuthenticatedStorage> Server<S> {
                     let vec = minicbor::to_vec(&crd)?;
                     let sig = self.signer.sign(&vec).await?;
                     let vec = minicbor::to_vec(&sig)?;
-                    // FIXME: Key IDs are not globally unique, only relative to vaults:
                     self.store.set(from.key_id(), OAUTH2.to_string(), vec).await?;
                     Response::ok(req.id()).body(&sig).to_vec()?
                 }

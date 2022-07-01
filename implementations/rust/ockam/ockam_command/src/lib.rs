@@ -1,7 +1,6 @@
 //! This library is used by the `ockam` CLI (in `./bin/ockam.rs`).
 
 mod authenticated;
-mod authority;
 mod config;
 mod enroll;
 mod forwarder;
@@ -16,7 +15,6 @@ mod transport;
 mod util;
 
 use authenticated::AuthenticatedCommand;
-use authority::AuthorityCommand;
 use config::ConfigCommand;
 use enroll::EnrollCommand;
 use forwarder::ForwarderCommand;
@@ -99,10 +97,6 @@ pub enum OckamSubcommand {
     /// Manage authenticated attributes.
     #[clap(display_order = 900, help_template = HELP_TEMPLATE)]
     Authenticated(AuthenticatedCommand),
-
-    /// TODO
-    #[clap(display_order = 900, help_template = HELP_TEMPLATE)]
-    Authority(AuthorityCommand),
 
     /// Create, list, accept or reject Invitations
     #[clap(display_order = 900, help_template = HELP_TEMPLATE)]
@@ -208,7 +202,6 @@ pub fn run() {
 
     match ockam_command.subcommand {
         OckamSubcommand::Authenticated(command) => AuthenticatedCommand::run(command),
-        OckamSubcommand::Authority(command) => AuthorityCommand::run(command),
         OckamSubcommand::Invitation(command) => InvitationCommand::run(command),
         OckamSubcommand::Enroll(command) => EnrollCommand::run(command),
         OckamSubcommand::GenerateEnrollmentToken(command) => {
