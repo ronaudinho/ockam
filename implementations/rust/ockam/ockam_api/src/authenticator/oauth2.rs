@@ -11,6 +11,7 @@ use ockam_core::{self, Address, Result, Route, Routed, Worker};
 use ockam_identity::authenticated_storage::AuthenticatedStorage;
 use ockam_identity::{IdentityIdentifier, IdentitySecureChannelLocalInfo};
 use ockam_node::Context;
+use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json as json;
 use tracing::{trace, warn};
@@ -68,26 +69,43 @@ impl<S: AuthenticatedStorage> Server<S> {
             Some(Method::Post) => match req.path_segments::<2>().as_slice() {
                 ["register"] => {
                     let crq: CredentialRequest = dec.decode()?;
-                    let jsn = self.fetch_user_profile(crq.access_token()).await?;
-                    let now = Timestamp::now().ok_or_else(invalid_sys_time)?;
-                    let crd = {
-                        let mut mc = MemberCredential::new(now, from.into());
-                        if let Some(e) = jsn.get("email").and_then(|e| e.as_str()) {
-                            let v = jsn
-                                .get("email_verified")
-                                .and_then(|b| b.as_bool())
-                                .unwrap_or(false);
-                            mc = mc.with_email(e, v)
+                    match self.fetch_user_profile(crq.access_token()).await {
+                        Ok(json) => {
+                            let now = Timestamp::now().ok_or_else(invalid_sys_time)?;
+                            let crd = {
+                                let mut mc = MemberCredential::new(now, from.into());
+                                if let Some(e) = json.get("email").and_then(|e| e.as_str()) {
+                                    let v = json
+                                        .get("email_verified")
+                                        .and_then(|b| b.as_bool())
+                                        .unwrap_or(false);
+                                    mc = mc.with_email(e, v)
+                                }
+                                mc
+                            };
+                            let sig = self.signer.sign(&crd).await?;
+                            let vec = minicbor::to_vec(&sig)?;
+                            self.store
+                                .set(from.key_id(), OAUTH2.to_string(), vec)
+                                .await?;
+                            Response::ok(req.id()).body(&sig).to_vec()?
                         }
-                        mc
-                    };
-                    let vec = minicbor::to_vec(&crd)?;
-                    let sig = self.signer.sign(&vec).await?;
-                    let vec = minicbor::to_vec(&sig)?;
-                    self.store
-                        .set(from.key_id(), OAUTH2.to_string(), vec)
-                        .await?;
-                    Response::ok(req.id()).body(&sig).to_vec()?
+                        Err(err) => {
+                            warn! {
+                                from   = %from,
+                                id     = %req.id(),
+                                method = ?req.method(),
+                                path   = %req.path(),
+                                url    = %self.url,
+                                "failed to fetch user profile"
+                            }
+                            if err.code().kind == Kind::Invalid {
+                                Response::unauthorized(req.id()).to_vec()?
+                            } else {
+                                Response::internal_error(req.id()).to_vec()?
+                            }
+                        }
+                    }
                 }
                 _ => response::unknown_path(&req).to_vec()?,
             },
@@ -109,6 +127,7 @@ impl<S: AuthenticatedStorage> Server<S> {
     }
 
     async fn fetch_user_profile(&self, token: &str) -> Result<json::Value> {
+        debug!(url = %self.url, "fetching user profile");
         let res = self
             .client
             .get(self.url.as_str())
@@ -117,16 +136,28 @@ impl<S: AuthenticatedStorage> Server<S> {
             .send()
             .await
             .map_err(http_request_error)?;
-        if !res.status().is_success() {
-            return Err(ockam_core::Error::new(
-                Origin::Application,
-                Kind::Invalid,
-                "todo!",
-            ));
+        match res.status() {
+            StatusCode::OK => {
+                let body = res.bytes().await.map_err(http_request_error)?;
+                let json = json::from_slice(&body).map_err(json_error)?;
+                Ok(json)
+            }
+            StatusCode::UNAUTHORIZED => {
+                Err(ockam_core::Error::new(
+                    Origin::Application,
+                    Kind::Invalid,
+                    "unauthorized user profile access",
+                ))
+            }
+            other => {
+                error!(url = %self.url, status = %other, "error response");
+                Err(ockam_core::Error::new(
+                    Origin::Application,
+                    Kind::Io,
+                    "failed to fetch user profile",
+                ))
+            }
         }
-        let body = res.bytes().await.map_err(http_request_error)?;
-        let json = json::from_slice(&body).map_err(json_error)?;
-        Ok(json)
     }
 }
 

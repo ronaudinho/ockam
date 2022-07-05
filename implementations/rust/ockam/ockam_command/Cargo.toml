@@ -28,6 +28,9 @@ name = "ockam"
 doc = false
 test = false
 
+[features]
+lmdb = ["ockam_api/lmdb"]
+
 [dependencies]
 anyhow = "1"
 async-recursion = { version = "1.0.0" }

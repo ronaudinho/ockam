@@ -215,7 +215,7 @@ pub fn run() {
 
     match ockam_command.subcommand {
         OckamSubcommand::Authenticated(command) => AuthenticatedCommand::run(command),
-        OckamSubcommand::Authenticator(command) => AuthenticatorCommand::run(command),
+        OckamSubcommand::Authenticator(command) => AuthenticatorCommand::run(&cfg, command),
         OckamSubcommand::Invitation(command) => InvitationCommand::run(command),
         OckamSubcommand::Enroll(command) => EnrollCommand::run(command),
         OckamSubcommand::GenerateEnrollmentToken(command) => {

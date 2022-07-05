@@ -7,8 +7,8 @@ use super::{
 use crate::error::ApiError;
 use crate::{nodes::types::*, Method, Request, Response, ResponseBuilder, Status};
 
-use ockam::remote::RemoteForwarder;
-use ockam::{Address, Context, Result, Route, Routed, TcpTransport, Worker};
+use ockam::{remote::RemoteForwarder, authenticated_storage::AuthenticatedStorage};
+use ockam::{Address, AsyncTryClone, Context, Result, Route, Routed, TcpTransport, Worker};
 use ockam_core::compat::{boxed::Box, collections::BTreeMap, string::String};
 use ockam_core::errcode::{Kind, Origin};
 use ockam_identity::{Identity, TrustEveryonePolicy};
@@ -116,11 +116,11 @@ impl NodeMan {
             .collect()
     }
 
-    async fn add_transport(
+    async fn add_transport<'a>(
         &mut self,
         req: &Request<'_>,
         dec: &mut Decoder<'_>,
-    ) -> Result<ResponseBuilder<TransportStatus<'_>>> {
+    ) -> Result<ResponseBuilder<TransportStatus<'a>>> {
         let CreateTransport { tt, tm, addr, .. } = dec.decode()?;
 
         use {TransportMode::*, TransportType::*};
@@ -276,12 +276,12 @@ impl NodeMan {
 
     //////// Secure channel API ////////
 
-    async fn create_secure_channel(
+    async fn create_secure_channel<'a>(
         &mut self,
         _ctx: &Context,
         req: &Request<'_>,
         dec: &mut Decoder<'_>,
-    ) -> Result<ResponseBuilder<CreateSecureChannelResponse<'_>>> {
+    ) -> Result<ResponseBuilder<CreateSecureChannelResponse<'a>>> {
         let CreateSecureChannelRequest { addr, .. } = dec.decode()?;
 
         info!("Handling request to create a new secure channel: {}", addr);
@@ -340,6 +340,76 @@ impl NodeMan {
         Ok(response)
     }
 
+    async fn setup_authenticators(
+        &mut self,
+        ctx: &Context,
+        req: &Request<'_>,
+        dec: &mut Decoder<'_>,
+    ) -> Result<ResponseBuilder<()>> {
+        let cfg: SetupAuthenticators = dec.decode()?;
+
+        #[cfg(feature = "lmdb")]
+        {
+            if let Some(path) = cfg.path() {
+                let s = crate::lmdb::LmdbStorage::new(path).await?;
+                self.setup_authenticators_with(ctx, s, cfg).await?
+            } else {
+                let s = InMemoryStorage::new();
+                self.setup_authenticators_with(ctx, s, cfg).await?
+            }
+        }
+
+        #[cfg(not(feature = "lmdb"))]
+        {
+            if let Some(path) = cfg.path() {
+                return Response::not_implemented(req.id())
+            }
+
+            let s = InMemoryStorage::new();
+            self.setup_authenticators_with(ctx, s, cfg).await?
+        }
+
+        Ok(Response::ok(req.id()))
+    }
+
+    async fn setup_authenticators_with<S>(&mut self, ctx: &Context, store: S, cfg: SetupAuthenticators<'_>) -> Result<()>
+    where
+        S: AuthenticatedStorage
+    {
+        let i = if let Some(i) = &self.identity {
+            i.async_try_clone().await?
+        } else {
+            return Err(ApiError::generic("Identity doesn't exist"))
+        };
+
+        let s = crate::signer::Server::new(i);
+        ctx.start_worker("signer", s).await?;
+
+        if cfg.is_direct_admin() {
+            let s = store.async_try_clone().await?;
+            let c = crate::signer::Client::new("signer".into(), ctx).await?;
+            let a = crate::authenticator::direct::Server::admin(s, c);
+            ctx.start_worker("direct-auth-admin", a).await?
+        }
+
+        if cfg.is_direct() {
+            let s = store.async_try_clone().await?;
+            let c = crate::signer::Client::new("signer".into(), ctx).await?;
+            let a = crate::authenticator::direct::Server::new(s, c);
+            ctx.start_worker("direct-auth", a).await?
+        }
+
+        if let Some(cfg) = cfg.oauth2() {
+            let s = store.async_try_clone().await?;
+            let c = crate::signer::Client::new("signer".into(), ctx).await?;
+            let u = cfg.url().try_into().unwrap(); // FIXME
+            let a = crate::authenticator::oauth2::Server::new(s, c, u);
+            ctx.start_worker("oauth2-auth", a).await?
+        }
+
+        Ok(())
+    }
+
     //////// Inlet and Outlet portal API ////////
 
     fn get_portals(&self, req: &Request<'_>) -> ResponseBuilder<PortalList<'_>> {
@@ -358,12 +428,12 @@ impl NodeMan {
         ))
     }
 
-    async fn create_iolet(
+    async fn create_iolet<'a>(
         &mut self,
         _ctx: &mut Context,
         req: &Request<'_>,
         dec: &mut Decoder<'_>,
-    ) -> Result<ResponseBuilder<PortalStatus<'_>>> {
+    ) -> Result<ResponseBuilder<PortalStatus<'a>>> {
         let CreatePortal {
             addr,
             alias,
@@ -485,6 +555,12 @@ impl NodeMan {
                 .encode(enc)?,
             (Post, "/node/secure_channel_listener") => self
                 .create_secure_channel_listener(ctx, req, dec)
+                .await?
+                .encode(enc)?,
+
+            // ==*== Authenticators
+            (Post, "/node/authenticators") => self
+                .setup_authenticators(ctx, req, dec)
                 .await?
                 .encode(enc)?,
 

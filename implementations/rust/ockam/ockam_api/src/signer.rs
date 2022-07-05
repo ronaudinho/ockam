@@ -19,7 +19,9 @@ pub struct Server<V: IdentityVault> {
 
 impl<V: IdentityVault> fmt::Debug for Server<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Server").finish()
+        f.debug_struct("Server")
+            .field("id", &self.id.identifier())
+            .finish()
     }
 }
 
@@ -95,7 +97,7 @@ impl Client {
     }
 
     /// Have some data signed by the signer.
-    pub async fn sign(&mut self, data: &[u8]) -> Result<Signed<'_>> {
+    pub async fn sign<T: Encode<()>>(&mut self, data: T) -> Result<Signed<'_>> {
         let req = Request::post("/sign").body(data);
         self.buf = self.request("sign", None, &req).await?;
         assert_response_match("signer_signed", &self.buf);

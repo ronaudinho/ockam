@@ -6,13 +6,10 @@ use crate::{
     node::show::query_status,
     util::{connect_to, embedded_node, OckamConfig, DEFAULT_TCP_PORT},
 };
-use ockam::authenticated_storage::InMemoryStorage;
 use ockam::{Context, TcpTransport};
 use ockam_api::{
-    auth, authenticator,
     nodes::types::{TransportMode, TransportType},
     nodes::{NodeMan, NODEMAN_ADDR},
-    signer,
 };
 
 #[derive(Clone, Debug, Args)]
@@ -32,10 +29,6 @@ pub struct CreateCommand {
     /// Specify the API port
     #[clap(default_value_t = DEFAULT_TCP_PORT, long, short)]
     port: u16,
-
-    /// Start authenticators.
-    #[clap(long, short)]
-    authenticator: Vec<String>,
 
     #[clap(long, hide = true)]
     no_watchdog: bool,
@@ -81,6 +74,8 @@ impl CreateCommand {
                     "create",
                     "--port",
                     &command.port.to_string(),
+                    "--address",
+                    &command.address.to_string(),
                     &command.node_name,
                 ])
                 .stdout(main_log_file)
@@ -133,43 +128,9 @@ impl CreateCommand {
 }
 
 async fn setup(ctx: Context, (c, cfg): (CreateCommand, OckamConfig)) -> anyhow::Result<()> {
-    const SIGNER: &str = "signer";
-
     let tcp = TcpTransport::create(&ctx).await?;
     let bind = format!("{}:{}", c.address, c.port);
     tcp.listen(&bind).await?;
-
-    let s = InMemoryStorage::new();
-
-    ctx.start_worker("authenticated", auth::Server::new(s.clone()))
-        .await?;
-
-    if !c.authenticator.is_empty() {
-        let id = crate::old::identity::load_or_create_identity(&ctx, false).await?;
-        ctx.start_worker(SIGNER, signer::Server::new(id)).await?
-    }
-
-    for a in &c.authenticator {
-        match a.to_ascii_lowercase().as_str() {
-            "oauth2" => {
-                let clt = signer::Client::new(SIGNER.into(), &ctx).await?;
-                let url = "https://dev-w5hdnpc2.us.auth0.com/userinfo".try_into()?; // TODO
-                let srv = authenticator::oauth2::Server::new(s.clone(), clt, url);
-                ctx.start_worker("oauth2-auth", srv).await?
-            }
-            "direct" => {
-                let clt = signer::Client::new(SIGNER.into(), &ctx).await?;
-                let srv = authenticator::direct::Server::new(s.clone(), clt);
-                ctx.start_worker("direct-auth", srv).await?
-            }
-            "direct-admin" => {
-                let clt = signer::Client::new(SIGNER.into(), &ctx).await?;
-                let srv = authenticator::direct::Server::admin(s.clone(), clt);
-                ctx.start_worker("direct-auth-admin", srv).await?
-            }
-            _ => eprintln!("unknown authenticator: {a}"),
-        }
-    }
 
     let node_dir = cfg.get_node_dir(&c.node_name).unwrap(); // can't fail because we already checked it
     let node_man = NodeMan::create(

@@ -242,6 +242,14 @@ impl Response {
         Response::builder(re, Status::NotImplemented)
     }
 
+    pub fn unauthorized(re: Id) -> ResponseBuilder {
+        Response::builder(re, Status::Unauthorized)
+    }
+
+    pub fn internal_error(re: Id) -> ResponseBuilder {
+        Response::builder(re, Status::InternalServerError)
+    }
+
     pub fn id(&self) -> Id {
         self.id
     }

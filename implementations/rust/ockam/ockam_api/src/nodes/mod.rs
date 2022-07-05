@@ -4,6 +4,7 @@ mod portal;
 mod secure_channel;
 mod service;
 mod transport;
+mod authenticators;
 
 /// Messaging types for the node manager service
 ///
@@ -15,6 +16,7 @@ pub mod types {
     pub use super::portal::*;
     pub use super::secure_channel::*;
     pub use super::transport::*;
+    pub use super::authenticators::*;
 }
 
 /// A const address to bind and send messages to
