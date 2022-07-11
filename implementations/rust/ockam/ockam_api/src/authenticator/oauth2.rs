@@ -11,8 +11,8 @@ use ockam_core::{self, Address, Result, Route, Routed, Worker};
 use ockam_identity::authenticated_storage::AuthenticatedStorage;
 use ockam_identity::{IdentityIdentifier, IdentitySecureChannelLocalInfo};
 use ockam_node::Context;
-use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::StatusCode;
 use serde_json as json;
 use tracing::{trace, warn};
 use types::{CredentialRequest, MemberCredential};
@@ -142,13 +142,11 @@ impl<S: AuthenticatedStorage> Server<S> {
                 let json = json::from_slice(&body).map_err(json_error)?;
                 Ok(json)
             }
-            StatusCode::UNAUTHORIZED => {
-                Err(ockam_core::Error::new(
-                    Origin::Application,
-                    Kind::Invalid,
-                    "unauthorized user profile access",
-                ))
-            }
+            StatusCode::UNAUTHORIZED => Err(ockam_core::Error::new(
+                Origin::Application,
+                Kind::Invalid,
+                "unauthorized user profile access",
+            )),
             other => {
                 error!(url = %self.url, status = %other, "error response");
                 Err(ockam_core::Error::new(

@@ -4,10 +4,10 @@ use super::{
     portal::{PortalList, PortalStatus},
     types::{CreateTransport, DeleteTransport},
 };
-use crate::error::ApiError;
+use crate::{error::ApiError, authenticator::IdentityId};
 use crate::{nodes::types::*, Method, Request, Response, ResponseBuilder, Status};
 
-use ockam::{remote::RemoteForwarder, authenticated_storage::AuthenticatedStorage};
+use ockam::remote::RemoteForwarder;
 use ockam::{Address, AsyncTryClone, Context, Result, Route, Routed, TcpTransport, Worker};
 use ockam_core::compat::{boxed::Box, collections::BTreeMap, string::String};
 use ockam_core::errcode::{Kind, Origin};
@@ -21,7 +21,6 @@ use crate::lmdb::LmdbStorage;
 use crate::old::identity::{create_identity, load_identity};
 use core::convert::Infallible;
 use minicbor::{encode::Write, Decoder};
-use ockam_identity::authenticated_storage::mem::InMemoryStorage;
 use ockam_vault::storage::FileStorage;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -255,7 +254,7 @@ impl NodeMan {
         &mut self,
         ctx: &Context,
         req: &Request<'_>,
-    ) -> Result<ResponseBuilder> {
+    ) -> Result<ResponseBuilder<()>> {
         if self.identity.is_some() {
             return Ok(Response::bad_request(req.id()));
         }
@@ -348,66 +347,43 @@ impl NodeMan {
     ) -> Result<ResponseBuilder<()>> {
         let cfg: SetupAuthenticators = dec.decode()?;
 
-        #[cfg(feature = "lmdb")]
-        {
-            if let Some(path) = cfg.path() {
-                let s = crate::lmdb::LmdbStorage::new(path).await?;
-                self.setup_authenticators_with(ctx, s, cfg).await?
-            } else {
-                let s = InMemoryStorage::new();
-                self.setup_authenticators_with(ctx, s, cfg).await?
-            }
-        }
-
-        #[cfg(not(feature = "lmdb"))]
-        {
-            if let Some(path) = cfg.path() {
-                return Response::not_implemented(req.id())
-            }
-
-            let s = InMemoryStorage::new();
-            self.setup_authenticators_with(ctx, s, cfg).await?
-        }
-
-        Ok(Response::ok(req.id()))
-    }
-
-    async fn setup_authenticators_with<S>(&mut self, ctx: &Context, store: S, cfg: SetupAuthenticators<'_>) -> Result<()>
-    where
-        S: AuthenticatedStorage
-    {
         let i = if let Some(i) = &self.identity {
             i.async_try_clone().await?
         } else {
-            return Err(ApiError::generic("Identity doesn't exist"))
+            return Err(ApiError::generic("Identity doesn't exist"));
         };
 
-        let s = crate::signer::Server::new(i);
+        let s = {
+            let s = self.authenticated_storage.async_try_clone().await?;
+            crate::signer::Server::new(i, s)
+        };
         ctx.start_worker("signer", s).await?;
 
         if cfg.is_direct_admin() {
-            let s = store.async_try_clone().await?;
+            let s = self.authenticated_storage.async_try_clone().await?;
             let c = crate::signer::Client::new("signer".into(), ctx).await?;
             let a = crate::authenticator::direct::Server::admin(s, c);
             ctx.start_worker("direct-auth-admin", a).await?
         }
 
         if cfg.is_direct() {
-            let s = store.async_try_clone().await?;
+            let s = self.authenticated_storage.async_try_clone().await?;
             let c = crate::signer::Client::new("signer".into(), ctx).await?;
             let a = crate::authenticator::direct::Server::new(s, c);
             ctx.start_worker("direct-auth", a).await?
         }
 
         if let Some(cfg) = cfg.oauth2() {
-            let s = store.async_try_clone().await?;
+            let s = self.authenticated_storage.async_try_clone().await?;
             let c = crate::signer::Client::new("signer".into(), ctx).await?;
-            let u = cfg.url().try_into().unwrap(); // FIXME
+            let u = cfg.url().try_into().map_err(|e| {
+                ockam_core::Error::new(Origin::Application, Kind::Invalid, e)
+            })?;
             let a = crate::authenticator::oauth2::Server::new(s, c, u);
             ctx.start_worker("oauth2-auth", a).await?
         }
 
-        Ok(())
+        Ok(Response::ok(req.id()))
     }
 
     //////// Inlet and Outlet portal API ////////
@@ -546,7 +522,26 @@ impl NodeMan {
             // (Post, "/node/vault") => self.create_vault().await?,
 
             // ==*== Identity ==*==
-            (Post, "/node/identity") => self.create_identity(ctx, req).await?.encode(enc)?,
+            (Get, "/node/identity") => {
+                if let Some(i) = &self.identity {
+                    let id = i.identifier()?;
+                    let id = IdentityId::new(id.key_id());
+                    Response::ok(req.id()).body(IdentityInfo::new(id)).encode(enc)?
+                } else {
+                    Response::not_found(req.id()).encode(enc)?
+                }
+            }
+            (Post, "/node/identity") => {
+                let r = self.create_identity(ctx, req).await?;
+                if let Some(i) = &self.identity {
+                    let id = i.identifier()?;
+                    let id = IdentityId::new(id.key_id());
+                    r.body(IdentityInfo::new(id)).encode(enc)?
+                } else {
+                    let msg = "invalid state: created identity not set";
+                    return Err(ockam_core::Error::new(Origin::Identity, Kind::Internal, msg))
+                }
+            }
 
             // ==*== Secure channels ==*==
             (Post, "/node/secure_channel") => self
@@ -591,9 +586,8 @@ impl Worker for NodeMan {
     async fn initialize(&mut self, ctx: &mut Context) -> Result<()> {
         // By default we start identity and authenticated services
 
-        // TODO: Use existent storage `self.authenticated_storage`
-        let s = InMemoryStorage::new();
-        let server = Server::new(s);
+        let store = self.authenticated_storage.async_try_clone().await?;
+        let server = Server::new(store);
         ctx.start_worker("authenticated", server).await?;
 
         // TODO: put that behind some flag or configuration

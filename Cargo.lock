@@ -2133,6 +2133,7 @@ name = "ockam_api"
 version = "0.6.0"
 dependencies = [
  "cddl-cat",
+ "data-encoding",
  "fake",
  "lmdb-rkv",
  "minicbor",
@@ -2186,6 +2187,7 @@ dependencies = [
  "clap 3.2.4",
  "cli-table",
  "crossbeam-channel",
+ "data-encoding",
  "dialoguer",
  "directories",
  "dirs",

@@ -6,18 +6,20 @@ use crate::{Error, Method, Request, RequestBuilder, Response, Status};
 use core::fmt;
 use minicbor::{Decoder, Encode};
 use ockam_core::errcode::{Kind, Origin};
-use ockam_core::{self, Address, Result, Route, Routed, Worker};
-use ockam_identity::{Identity, IdentityVault};
+use ockam_core::{self, Address, Result, Route, Routed, Worker, vault};
+use ockam_identity::authenticated_storage::AuthenticatedStorage;
+use ockam_identity::{Identity, IdentityVault, IdentityIdentifier};
 use ockam_node::Context;
 use tracing::{trace, warn};
 use types::{Signature, Signed};
 
 /// A signer server signs arbitrary data handed to it.
-pub struct Server<V: IdentityVault> {
+pub struct Server<V: IdentityVault, S> {
     id: Identity<V>,
+    storage: S
 }
 
-impl<V: IdentityVault> fmt::Debug for Server<V> {
+impl<V: IdentityVault, S> fmt::Debug for Server<V, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Server")
             .field("id", &self.id.identifier())
@@ -26,7 +28,7 @@ impl<V: IdentityVault> fmt::Debug for Server<V> {
 }
 
 #[ockam_core::worker]
-impl<V: IdentityVault> Worker for Server<V> {
+impl<V: IdentityVault, S: AuthenticatedStorage> Worker for Server<V, S> {
     type Context = Context;
     type Message = Vec<u8>;
 
@@ -36,9 +38,9 @@ impl<V: IdentityVault> Worker for Server<V> {
     }
 }
 
-impl<V: IdentityVault> Server<V> {
-    pub fn new(id: Identity<V>) -> Self {
-        Server { id }
+impl<V: IdentityVault, S: AuthenticatedStorage> Server<V, S> {
+    pub fn new(id: Identity<V>, storage: S) -> Self {
+        Server { id, storage }
     }
 
     async fn on_request(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -62,6 +64,20 @@ impl<V: IdentityVault> Server<V> {
                     let sig = self.id.create_signature(dat).await?;
                     let bdy = Signed::new(dat, Signature::new((&kid).into(), sig.as_ref()));
                     Response::ok(req.id()).body(bdy).to_vec()?
+                }
+                _ => response::unknown_path(&req).to_vec()?,
+            },
+            Some(Method::Get) => match req.path_segments::<2>().as_slice() {
+                ["verify"] => {
+                    let signed: Signed = dec.decode()?;
+                    let sig = vault::Signature::new(signed.signature().signature().to_vec());
+                    let kid = signed.signature().identity().as_str();
+                    let iid = IdentityIdentifier::from_key_id(kid.to_string());
+                    if self.id.verify_signature(&sig, &iid, signed.data(), &self.storage).await? {
+                        Response::ok(req.id()).to_vec()?
+                    } else {
+                        Response::unauthorized(req.id()).to_vec()?
+                    }
                 }
                 _ => response::unknown_path(&req).to_vec()?,
             },
@@ -108,6 +124,19 @@ impl Client {
             Ok(s)
         } else {
             Err(error("sign", &res, &mut d))
+        }
+    }
+
+    /// Verify some signed data.
+    pub async fn verify(&mut self, sig: &Signed<'_>) -> Result<bool> {
+        let req = Request::get("/verify").body(sig);
+        self.buf = self.request("verify", "signer_signed", &req).await?;
+        let mut d = Decoder::new(&self.buf);
+        let res = response("verify", &mut d)?;
+        match res.status() {
+            Some(Status::Ok) => Ok(true),
+            Some(Status::Unauthorized) => Ok(false),
+            _ => Err(error("sign", &res, &mut d))
         }
     }
 

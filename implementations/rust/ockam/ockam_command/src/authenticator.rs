@@ -1,12 +1,12 @@
-use crate::util::{OckamConfig, connect_to, embedded_node, stop_node};
+use crate::util::{connect_to, embedded_node, stop_node, OckamConfig};
 use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
 use ockam::{Context, Route, TcpTransport};
-use ockam_api::{Request, multiaddr_to_route};
 use ockam_api::authenticator::direct::{self, types::Enroller};
 use ockam_api::authenticator::oauth2::{self, types::CredentialRequest};
 use ockam_api::authenticator::IdentityId;
-use ockam_api::nodes::types::{SetupAuthenticators, Oauth2Config};
+use ockam_api::nodes::types::{Oauth2Config, SetupAuthenticators};
+use ockam_api::{multiaddr_to_route, Request, Response, Status};
 use ockam_multiaddr::MultiAddr;
 
 #[derive(Clone, Debug, Args)]
@@ -20,17 +20,17 @@ pub struct AuthenticatorCommand {
 
     #[cfg(feature = "lmdb")]
     #[clap(long, short)]
-    persist: Option<std::path::PathBuf>
+    persist: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum AuthenticatorSubcommand {
     SetupServices {
         #[clap(long, short)]
-        authenticators: Vec<String>,
-        
+        authenticator: Vec<String>,
+
         #[clap(long)]
-        auth0_url: Option<String>
+        oauth2_url: Option<String>,
     },
     RegisterEnroller {
         #[clap(long, short)]
@@ -58,26 +58,36 @@ pub enum AuthenticatorSubcommand {
 impl AuthenticatorCommand {
     pub fn run(cfg: &OckamConfig, cmd: AuthenticatorCommand) {
         match cmd.subcommand {
-            AuthenticatorSubcommand::SetupServices { authenticators, auth0_url } => {
+            AuthenticatorSubcommand::SetupServices {
+                authenticator,
+                oauth2_url,
+            } => {
                 let node = if let Some(node) = cfg.select_node(&cmd.api_node) {
                     node
                 } else {
                     eprintln!("api node {:?} not found", cmd.api_node);
-                    return
+                    return;
                 };
-                connect_to(node.port, (authenticators, auth0_url), setup)
+                connect_to(node.port, (authenticator, oauth2_url), setup)
             }
-            AuthenticatorSubcommand::RegisterEnroller { addr, identity } =>
-                embedded_node(register_enroller, (addr, identity)),
-            AuthenticatorSubcommand::DeregisterEnroller { addr, identity } =>
-                embedded_node(deregister_enroller, (addr, identity)),
-            AuthenticatorSubcommand::RegisterByOauth2Token { addr, token } =>
+            AuthenticatorSubcommand::RegisterEnroller { addr, identity } => {
+                embedded_node(register_enroller, (addr, identity))
+            }
+            AuthenticatorSubcommand::DeregisterEnroller { addr, identity } => {
+                embedded_node(deregister_enroller, (addr, identity))
+            }
+            AuthenticatorSubcommand::RegisterByOauth2Token { addr, token } => {
                 embedded_node(register_token, (addr, token))
+            }
         }
     }
 }
 
-async fn setup(ctx: Context, (authenticators, url): (Vec<String>, Option<String>), mut base: Route) -> Result<()> {
+async fn setup(
+    ctx: Context,
+    (authenticators, url): (Vec<String>, Option<String>),
+    mut base: Route,
+) -> Result<()> {
     let mut cfg = SetupAuthenticators::new();
     for a in &authenticators {
         match a.as_str() {
@@ -86,17 +96,23 @@ async fn setup(ctx: Context, (authenticators, url): (Vec<String>, Option<String>
                     let o = Oauth2Config::new(url);
                     cfg = cfg.with_oauth2(o)
                 } else {
-                    return Err(anyhow!("missing auth0-url option"))
+                    return Err(anyhow!("missing auth0-url option"));
                 }
             }
-            "direct"       => cfg = cfg.with_direct(),
+            "direct" => cfg = cfg.with_direct(),
             "direct-admin" => cfg = cfg.with_direct_admin(),
-            _              => eprintln!("unknown authenticator {a}")
+            _ => eprintln!("unknown authenticator {a}"),
         }
     }
     let route: Route = base.modify().append("_internal.nodeman").into();
     let req = Request::post("/node/authenticators").body(cfg).to_vec()?;
-    let res = ctx.send_and_receive(route, req).await?;
+    let vec: Vec<u8> = ctx.send_and_receive(route, req).await?;
+    let res: Response = minicbor::decode(&vec)?;
+    if res.status() == Some(Status::Ok) {
+        println!("authenticators configured")
+    } else {
+        eprintln!("failed to setup authenticators")
+    }
     stop_node(ctx).await
 }
 
@@ -122,7 +138,7 @@ async fn register_token(ctx: Context, (addr, token): (MultiAddr, String)) -> Res
     TcpTransport::create(&ctx).await?;
     let r = multiaddr_to_route(&addr).ok_or_else(|| anyhow!("failed to parse address {addr}"))?;
     let mut c = oauth2::Client::new(r, &ctx).await?;
-    c.register(&CredentialRequest::new(token)).await?;
-    println!("registered successfully");
+    let s = c.register(&CredentialRequest::new(token)).await?;
+    println!("registered successfully; credential = {s}");
     stop_node(ctx).await
 }

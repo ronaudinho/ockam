@@ -1,3 +1,5 @@
+use core::fmt;
+use data_encoding::BASE32_DNSSEC;
 use crate::authenticator::IdentityId;
 use crate::CowBytes;
 use minicbor::{Decode, Encode};
@@ -27,6 +29,13 @@ impl<'a> Signed<'a> {
 
     pub fn signature(&self) -> &Signature {
         &self.sig
+    }
+}
+
+impl fmt::Display for Signed<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = minicbor::to_vec(self).expect("Signed::encode does not fail");
+        write!(f, "{}", BASE32_DNSSEC.encode(&bytes))
     }
 }
 

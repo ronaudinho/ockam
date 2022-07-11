@@ -58,6 +58,13 @@ impl<S: AuthenticatedStorage> Server<S> {
                 }
                 _ => response::unknown_path(&req).to_vec()?,
             },
+            Some(Method::Delete) => match req.path_segments::<5>().as_slice() {
+                ["authenticated", id, "attribute", key] => {
+                    self.store.del(id, key).await?;
+                    Response::ok(req.id()).to_vec()?
+                }
+                _ => response::unknown_path(&req).to_vec()?,
+            },
             _ => response::invalid_method(&req).to_vec()?,
         };
 
@@ -103,6 +110,19 @@ impl Client {
             }
             Some(Status::NotFound) => Ok(None),
             _ => Err(error("get attribute", &res, &mut d)),
+        }
+    }
+
+    pub async fn del(&mut self, id: &str, attr: &str) -> Result<()> {
+        let req = Request::delete(format!("/authenticated/{id}/attribute/{attr}"));
+        self.buf = self.request("del attribute", None, &req).await?;
+        assert_response_match(None, &self.buf);
+        let mut d = Decoder::new(&self.buf);
+        let res = response("del attribute", &mut d)?;
+        if res.status() == Some(Status::Ok) {
+            Ok(())
+        } else {
+            Err(error("del attribute", &res, &mut d))
         }
     }
 

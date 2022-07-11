@@ -1,7 +1,6 @@
 use crate::CowStr;
-use minicbor::{Encode, Decode};
+use minicbor::{Decode, Encode};
 use ockam_core::compat::borrow::Cow;
-use std::path::Path;
 
 #[cfg(feature = "tag")]
 use ockam_core::TypeTag;
@@ -12,10 +11,9 @@ use ockam_core::TypeTag;
 pub struct SetupAuthenticators<'a> {
     #[cfg(feature = "tag")]
     #[n(0)] tag: TypeTag<9750358>,
-    #[b(1)] path: Option<&'a Path>,
-    #[n(2)] direct: Option<bool>,
-    #[n(3)] direct_admin: Option<bool>,
-    #[b(4)] oauth2: Option<Oauth2Config<'a>>
+    #[n(1)] direct: Option<bool>,
+    #[n(2)] direct_admin: Option<bool>,
+    #[b(3)] oauth2: Option<Oauth2Config<'a>>
 }
 
 impl<'a> SetupAuthenticators<'a> {
@@ -23,16 +21,10 @@ impl<'a> SetupAuthenticators<'a> {
         SetupAuthenticators {
             #[cfg(feature = "tag")]
             tag: TypeTag,
-            path: None,
             direct: None,
             direct_admin: None,
-            oauth2: None
+            oauth2: None,
         }
-    }
-
-    pub fn with_path(mut self, p: &'a Path) -> Self {
-        self.path = Some(p);
-        self
     }
 
     pub fn with_direct(mut self) -> Self {
@@ -50,10 +42,6 @@ impl<'a> SetupAuthenticators<'a> {
         self
     }
 
-    pub fn path(&self) -> Option<&'a Path> {
-        self.path
-    }
-
     pub fn is_direct(&self) -> bool {
         Some(true) == self.direct
     }
@@ -64,7 +52,7 @@ impl<'a> SetupAuthenticators<'a> {
 
     pub fn oauth2(&self) -> Option<&Oauth2Config<'a>> {
         if let Some(c) = &self.oauth2 {
-            return Some(c)
+            return Some(c);
         }
         None
     }
@@ -84,7 +72,7 @@ impl<'a> Oauth2Config<'a> {
         Oauth2Config {
             #[cfg(feature = "tag")]
             tag: TypTag,
-            url: CowStr(url.into())
+            url: CowStr(url.into()),
         }
     }
 
@@ -92,4 +80,3 @@ impl<'a> Oauth2Config<'a> {
         &self.url
     }
 }
-

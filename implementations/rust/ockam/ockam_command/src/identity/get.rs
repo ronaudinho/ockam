@@ -1,3 +1,4 @@
+use anyhow::Result;
 use crate::util::{api, connect_to, stop_node, OckamConfig};
 use clap::Args;
 use ockam::Context;
@@ -5,14 +6,14 @@ use ockam_api::{Response, Status, nodes::types::IdentityInfo};
 use ockam_core::Route;
 
 #[derive(Clone, Debug, Args)]
-pub struct CreateCommand {
+pub struct GetCommand {
     /// Override the default API node
     #[clap(short, long)]
     pub api_node: Option<String>,
 }
 
-impl CreateCommand {
-    pub fn run(cfg: &OckamConfig, command: CreateCommand) -> anyhow::Result<()> {
+impl GetCommand {
+    pub fn run(cfg: &OckamConfig, command: GetCommand) -> anyhow::Result<()> {
         let port = match cfg.select_node(&command.api_node) {
             Some(cfg) => cfg.port,
             None => {
@@ -21,21 +22,17 @@ impl CreateCommand {
             }
         };
 
-        connect_to(port, command, create_identity);
+        connect_to(port, (), get_identity);
 
         Ok(())
     }
 }
 
-pub async fn create_identity(
-    ctx: Context,
-    _cmd: CreateCommand,
-    mut base_route: Route,
-) -> anyhow::Result<()> {
+pub async fn get_identity(ctx: Context, _: (), mut base_route: Route) -> Result<()> {
     let resp: Vec<u8> = ctx
         .send_and_receive(
             base_route.modify().append("_internal.nodeman"),
-            api::create_identity()?,
+            api::get_identity()?,
         )
         .await?;
 
@@ -45,12 +42,16 @@ pub async fn create_identity(
     match response.status() {
         Some(Status::Ok) => {
             let id: IdentityInfo = dec.decode()?;
-            eprintln!("Identity {} created!", id.identity().as_str())
+            eprintln!("identity Id = {}", id.identity().as_str())
+        }
+        Some(Status::NotFound) => {
+            eprintln!("no identity found")
         }
         _ => {
-            eprintln!("An error occurred while creating Identity",)
+            eprintln!("An error occurred while getting identity information",)
         }
     }
 
     stop_node(ctx).await
 }
+
