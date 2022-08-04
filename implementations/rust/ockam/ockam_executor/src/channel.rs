@@ -146,6 +146,10 @@ impl<T> Receiver<T> {
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
         ReceiveFuture { inner: &self.0 }.poll_unpin(cx)
     }
+
+    pub fn close(&mut self) {
+        // TODO
+    }
 }
 
 impl<T> core::fmt::Debug for Receiver<T> {

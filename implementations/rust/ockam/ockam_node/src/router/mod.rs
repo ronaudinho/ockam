@@ -101,7 +101,7 @@ impl Router {
 
     /// A utility facade to hide failures that are not really failures
     pub async fn run(&mut self) -> Result<()> {
-        match self.run_inner().await {
+        let result = match self.run_inner().await {
             // Everything is A-OK :)
             Ok(()) => Ok(()),
             // If the router has already shut down this failure is a
@@ -115,7 +115,10 @@ impl Router {
             // If we _are_ still actually running then this is a real
             // failure and needs to be escalated
             e => e,
-        }
+        };
+        // messages are no longer processed => ensure senders are unblocked:
+        self.receiver.close();
+        result
     }
 
     async fn handle_msg(&mut self, msg: NodeMessage) -> Result<bool> {
