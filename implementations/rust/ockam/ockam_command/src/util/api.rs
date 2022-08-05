@@ -338,6 +338,30 @@ pub(crate) mod project {
     }
 }
 
+/// Helpers to create boink API requests
+pub(crate) mod boink {
+    use crate::boink::*;
+    use ockam_api::cloud::project::*;
+
+    use super::*;
+
+    // pub(crate) fn foo(cmd: FooCommand) -> anyhow::Result<Vec<u8>> {
+    //     let mut buf = vec![];
+    //     Request::builder(Method::Get, "v0/projects")
+    //         .body(CloudRequestWrapper::bare(cmd.cloud_opts.route()))
+    //         .encode(&mut buf)?;
+    //     Ok(buf)
+    // }
+
+    pub(crate) fn foo(cmd: FooCommand) -> anyhow::Result<Vec<u8>> {
+        let mut buf = vec![];
+        Request::builder(Method::Get, "v0/projects")
+            .body(CloudRequestWrapper::bare(cmd.cloud_opts.route()))
+            .encode(&mut buf)?;
+        Ok(buf)
+    }
+}
+
 /// Helpers to create invitations API requests
 pub(crate) mod invitations {
     use crate::invitation::*;

@@ -8,6 +8,8 @@ defmodule Ockam.Identity do
   Default implementation is `Ockam.Identity.Sidecar`
   """
 
+  require Logger
+
   @type t() :: {module :: atom, opaque :: any()}
   @type proof() :: binary()
 
@@ -20,6 +22,7 @@ defmodule Ockam.Identity do
   @spec create(module :: atom()) ::
           {:ok, identity :: t(), identity_id :: binary()} | {:error, reason :: any()}
   def create(module \\ @default_implementation) do
+    Logger.info("ockam::ockam_services::identity::create")
     with {:ok, data, id} <- module.create() do
       {:ok, {module, data}, id}
     end
@@ -27,6 +30,7 @@ defmodule Ockam.Identity do
 
   @spec validate_data(my_identity :: t(), data :: any()) :: {:ok, identity :: t()}
   def validate_data({my_module, _my_data}, contact_data) do
+    Logger.info("ockam::ockam_services::identity::validate_data")
     with {:ok, contact_id} <- validate_identity_change_history({my_module, contact_data}) do
       {:ok, {my_module, contact_data}, contact_id}
     end
@@ -40,12 +44,14 @@ defmodule Ockam.Identity do
   @spec validate_identity_change_history(contact :: t()) ::
           {:ok, contact_id :: binary()} | {:error, reason :: any()}
   def validate_identity_change_history({module, data}) do
+    Logger.info("ockam::ockam_services::identity::validate_identity_change_history")
     module.validate_identity_change_history(data)
   end
 
   @spec create_signature(identity :: t(), auth_hash :: binary()) ::
           {:ok, proof :: proof()} | {:error, reason :: any()}
   def create_signature({module, data}, auth_hash) do
+    Logger.info("ockam::ockam_services::identity::create_signature")
     module.create_signature(data, auth_hash)
   end
 
@@ -55,12 +61,14 @@ defmodule Ockam.Identity do
           auth_hash :: binary()
         ) :: :ok | {:error, reason :: any()}
   def verify_signature({module, data}, proof, auth_hash) do
+    Logger.info("ockam::ockam_services::identity::verify_signature")
     module.verify_signature(data, proof, auth_hash)
   end
 
   @spec compare_identity_change_history(current_identity :: t(), known_identity :: t) ::
           {:ok, atom()} | {:error, reason :: any()}
   def compare_identity_change_history({module, current_data}, {module, known_data}) do
+    Logger.info("ockam::ockam_services::identity::compare_identity_change_history")
     module.compare_identity_change_history(current_data, known_data)
   end
 

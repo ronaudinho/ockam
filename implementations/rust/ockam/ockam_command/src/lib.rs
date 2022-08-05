@@ -1,6 +1,7 @@
 //! This library is used by the `ockam` CLI (in `./bin/ockam.rs`).
 
 mod authenticated;
+mod boink;
 mod configuration;
 mod enroll;
 mod forwarder;
@@ -19,6 +20,7 @@ mod util;
 mod vault;
 
 use authenticated::AuthenticatedCommand;
+use boink::BoinkCommand;
 use configuration::ConfigurationCommand;
 use enroll::EnrollCommand;
 use forwarder::ForwarderCommand;
@@ -139,6 +141,10 @@ pub enum OckamSubcommand {
     /// Manage authenticated attributes.
     #[clap(display_order = 900, help_template = HELP_TEMPLATE)]
     Authenticated(AuthenticatedCommand),
+
+    /// Boink Command
+    #[clap(display_order = 900, help_template = HELP_TEMPLATE)]
+    Boink(BoinkCommand),
 
     /// Create, list, accept or reject Invitations
     #[clap(display_order = 900, help_template = HELP_TEMPLATE)]
@@ -266,6 +272,7 @@ pub fn run() {
 
     match ockam_command.subcommand {
         OckamSubcommand::Authenticated(command) => AuthenticatedCommand::run(command),
+        OckamSubcommand::Boink(command) => BoinkCommand::run(opts, command),
         OckamSubcommand::Invitation(command) => InvitationCommand::run(opts, command),
         OckamSubcommand::Enroll(command) => EnrollCommand::run(opts, command),
         OckamSubcommand::GenerateEnrollmentToken(command) => {
