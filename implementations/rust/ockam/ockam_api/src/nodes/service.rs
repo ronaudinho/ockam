@@ -175,7 +175,11 @@ impl NodeManager {
             .await?;
         self.start_identity_service_impl(ctx, "identity_service".into())
             .await?;
-        self.start_authenticated_service_impl(ctx, "authenticated".into())
+        self.start_authenticated_service_impl(ctx, "authenticated_service".into())
+            .await?;
+        self.start_uppercase_service_impl(ctx, "uppercase_service".into())
+            .await?;
+        self.start_echoer_service_impl(ctx, "echoer_service".into())
             .await?;
         self.create_secure_channel_listener_impl("api".into(), None)
             .await?;
@@ -340,6 +344,13 @@ impl NodeManager {
                 .start_authenticated_service(ctx, req, dec)
                 .await?
                 .to_vec()?,
+            (Post, ["node", "services", "uppercase"]) => self
+                .start_uppercase_service(ctx, req, dec)
+                .await?
+                .to_vec()?,
+            (Post, ["node", "services", "echoer"]) => {
+                self.start_echoer_service(ctx, req, dec).await?.to_vec()?
+            }
 
             // ==*== Forwarder commands ==*==
             (Post, ["node", "forwarder"]) => self.create_forwarder(ctx, req, dec).await?,
