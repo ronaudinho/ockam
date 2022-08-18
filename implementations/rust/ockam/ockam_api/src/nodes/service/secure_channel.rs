@@ -2,7 +2,7 @@ use super::map_multiaddr_err;
 use crate::error::ApiError;
 use crate::nodes::models::secure_channel::{
     CreateSecureChannelListenerRequest, CreateSecureChannelRequest, CreateSecureChannelResponse,
-    SecureChannelListenerAddrList,
+    SecureChannelListenerAddrList, DeleteSecureChannelRequest, DeleteSecureChannelResponse,
 };
 use crate::nodes::NodeManager;
 use minicbor::Decoder;
@@ -85,6 +85,30 @@ impl NodeManager {
 
         Ok(response)
     }
+
+    pub(super) async fn delete_secure_channel<'a>(
+        &mut self,
+        req: &Request<'_>,
+        dec: &mut Decoder<'_>,
+    ) -> Result<ResponseBuilder<DeleteSecureChannelResponse<'a>>> {
+        let body: DeleteSecureChannelRequest = dec.decode()?;
+
+        info!("Handling request to delete secure channel: {}", body.channel);
+
+        let channel_addr = &(*body.channel).into();
+        let response = match self.registry
+            .secure_channels
+            .remove_entry(channel_addr) {
+                Some((_, _)) =>
+                    Response::ok(req.id())
+                        .body(DeleteSecureChannelResponse::new(channel_addr)),
+                None => Response::not_found(req.id())
+                        .body(DeleteSecureChannelResponse::new(channel_addr))
+            };
+
+        Ok(response)
+    }
+
 
     pub(super) async fn create_secure_channel_listener_impl(
         &mut self,

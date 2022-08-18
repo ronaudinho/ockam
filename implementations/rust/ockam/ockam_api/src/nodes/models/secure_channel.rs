@@ -93,3 +93,40 @@ impl SecureChannelListenerAddrList {
         }
     }
 }
+
+#[derive(Debug, Clone, Decode, Encode)]
+#[rustfmt::skip]
+#[cbor(map)]
+pub struct DeleteSecureChannelRequest<'a> {
+    #[cfg(feature = "tag")]
+    #[n(0)] tag: TypeTag<2222222>,
+    #[b(1)] pub channel: Cow<'a, str>,
+}
+
+impl<'a> DeleteSecureChannelRequest<'a> {
+    pub fn new(channel: &Address) -> Self {
+        Self {
+            #[cfg(feature = "tag")]
+            tag: TypeTag,
+            channel: channel.to_string().into(),
+        }
+    }
+}
+#[derive(Debug, Clone, Decode, Encode)]
+#[rustfmt::skip]
+#[cbor(map)]
+pub struct DeleteSecureChannelResponse<'a> {
+    #[cfg(feature = "tag")]
+    #[n(0)] tag: TypeTag<1234567>,
+    #[b(1)] pub channel: Cow<'a, str>,
+}
+
+impl<'a> DeleteSecureChannelResponse<'a> {
+    pub fn new(channel: &Address) -> Self {
+        Self {
+            #[cfg(feature = "tag")]
+            tag: TypeTag,
+            channel: channel.to_string().into(),
+        }
+    }
+}

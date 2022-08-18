@@ -140,6 +140,17 @@ pub(crate) fn create_secure_channel(
     Ok(buf)
 }
 
+pub(crate) fn delete_secure_channel(addr: Address) -> Result<Vec<u8>> {
+    let payload =
+        models::secure_channel::DeleteSecureChannelRequest::new(&addr);
+
+    let mut buf = vec![];
+    Request::builder(Method::Post, "/node/delete_secure_channel")
+        .body(payload)
+        .encode(&mut buf)?;
+    Ok(buf)
+}
+
 /// Construct a request to create Secure Channel Listeners
 pub(crate) fn create_secure_channel_listener(
     addr: &Address,
