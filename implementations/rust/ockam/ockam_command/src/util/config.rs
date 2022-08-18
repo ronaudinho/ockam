@@ -44,10 +44,10 @@ pub enum ConfigError {
     NotFound(String),
     #[error("node with name {0} is not local")]
     NotLocal(String),
-    #[error("invalid secure channel address {0}")]
-    InvalidSecureChannelAddress(String),
     #[error("provided value was not a valid {0}: {1}")]
     FailedConvert(String, String),
+    #[error("invalid secure channel address {0}")]
+    InvalidSecureChannelAddress(String),
 }
 
 impl OckamConfig {

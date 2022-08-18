@@ -136,10 +136,10 @@ pub(crate) fn create_secure_channel(
     Request::builder(Method::Post, "/node/secure_channel").body(payload)
 }
 
-pub(crate) fn delete_secure_channel(
-    addr: Address,
-) -> RequestBuilder<'static, models::secure_channel::DeleteSecureChannelRequest<'static>> {
-    let payload = models::secure_channel::DeleteSecureChannelRequest::new(&addr);
+pub(crate) fn delete_secure_channel(addr: Address) 
+    -> RequestBuilder<'static, models::secure_channel::DeleteSecureChannelRequest<'static>> {
+    let payload =
+        models::secure_channel::DeleteSecureChannelRequest::new(&addr);
 
     Request::builder(Method::Post, "/node/delete_secure_channel").body(payload)
 }

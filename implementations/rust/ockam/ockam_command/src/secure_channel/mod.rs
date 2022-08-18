@@ -7,6 +7,7 @@ pub(crate) use delete::DeleteCommand;
 use crate::{CommandGlobalOpts, HELP_TEMPLATE};
 use clap::{Args, Subcommand};
 
+
 #[derive(Clone, Debug, Args)]
 pub struct SecureChannelCommand {
     #[clap(subcommand)]
