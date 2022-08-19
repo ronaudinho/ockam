@@ -7,6 +7,7 @@ pub(crate) use delete::DeleteCommand;
 use crate::{CommandGlobalOpts, HELP_TEMPLATE};
 use clap::{Args, Subcommand};
 
+
 #[derive(Clone, Debug, Args)]
 pub struct SecureChannelCommand {
     #[clap(subcommand)]
@@ -25,9 +26,8 @@ pub enum SecureChannelSubcommand {
 impl SecureChannelCommand {
     pub fn run(opts: CommandGlobalOpts, command: Self) {
         match command.subcommand {
-            SecureChannelSubcommand::Create(command) => CreateCommand::run(opts, command),
+            SecureChannelSubcommand::Create(sub_cmd) => sub_cmd.run(opts),
             SecureChannelSubcommand::Delete(sub_cmd) => sub_cmd.run(opts),
         }
-        .unwrap()
     }
 }

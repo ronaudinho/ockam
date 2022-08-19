@@ -2,7 +2,7 @@ use super::map_multiaddr_err;
 use crate::error::ApiError;
 use crate::nodes::models::secure_channel::{
     CreateSecureChannelListenerRequest, CreateSecureChannelRequest, CreateSecureChannelResponse,
-    SecureChannelListenerAddrList, DeleteSecureChannelRequest, DeleteSecureChannelResponse,
+    DeleteSecureChannelRequest, DeleteSecureChannelResponse, SecureChannelListenerAddrList,
 };
 use crate::nodes::NodeManager;
 use minicbor::Decoder;
@@ -96,19 +96,21 @@ impl NodeManager {
         info!("Handling request to delete secure channel: {}", body.channel);
 
         let channel_addr = &(*body.channel).into();
-        let response = match self.registry
-            .secure_channels
-            .remove_entry(channel_addr) {
-                Some((_, _)) =>
-                    Response::ok(req.id())
-                        .body(DeleteSecureChannelResponse::new(channel_addr)),
-                None => Response::not_found(req.id())
-                        .body(DeleteSecureChannelResponse::new(channel_addr))
-            };
+        let response = DeleteSecureChannelResponse::new(
+            self.registry
+                .secure_channels
+                .remove_entry(channel_addr)
+                .map(|(_, _)| channel_addr )
+        );
 
-        Ok(response)
+        if response.channel.is_some() {
+            self.identity.as_ref()
+                .ok_or_else(|| ApiError::generic("Identity doesn't exist"))?
+                .stop_secure_channel(channel_addr).await?;
+        }
+
+        Ok(Response::ok(req.id()).body(response))
     }
-
 
     pub(super) async fn create_secure_channel_listener_impl(
         &mut self,

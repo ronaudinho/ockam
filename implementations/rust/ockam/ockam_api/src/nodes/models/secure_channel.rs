@@ -118,15 +118,15 @@ impl<'a> DeleteSecureChannelRequest<'a> {
 pub struct DeleteSecureChannelResponse<'a> {
     #[cfg(feature = "tag")]
     #[n(0)] tag: TypeTag<1234567>,
-    #[b(1)] pub channel: Cow<'a, str>,
+    #[b(1)] pub channel: Option<Cow<'a, str>>,
 }
 
 impl<'a> DeleteSecureChannelResponse<'a> {
-    pub fn new(channel: &Address) -> Self {
+    pub fn new(channel: Option<&Address>) -> Self {
         Self {
             #[cfg(feature = "tag")]
             tag: TypeTag,
-            channel: channel.to_string().into(),
+            channel: channel.map(|ch| ch.to_string().into()),
         }
     }
 }
