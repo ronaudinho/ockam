@@ -93,20 +93,25 @@ impl NodeManager {
     ) -> Result<ResponseBuilder<DeleteSecureChannelResponse<'a>>> {
         let body: DeleteSecureChannelRequest = dec.decode()?;
 
-        info!("Handling request to delete secure channel: {}", body.channel);
+        info!(
+            "Handling request to delete secure channel: {}",
+            body.channel
+        );
 
         let channel_addr = &(*body.channel).into();
         let response = DeleteSecureChannelResponse::new(
             self.registry
                 .secure_channels
                 .remove_entry(channel_addr)
-                .map(|(_, _)| channel_addr )
+                .map(|(_, _)| channel_addr),
         );
 
         if response.channel.is_some() {
-            self.identity.as_ref()
+            self.identity
+                .as_ref()
                 .ok_or_else(|| ApiError::generic("Identity doesn't exist"))?
-                .stop_secure_channel(channel_addr).await?;
+                .stop_secure_channel(channel_addr)
+                .await?;
         }
 
         Ok(Response::ok(req.id()).body(response))

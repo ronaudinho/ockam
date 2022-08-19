@@ -1,12 +1,12 @@
-use crate::util::{api, node_rpc, Rpc, stop_node, exitcode, ConfigError};
+use crate::util::{api, exitcode, node_rpc, stop_node, ConfigError, Rpc};
 
 use crate::CommandGlobalOpts;
-use ockam::{Context};
 use clap::Args;
 use ockam::identity::IdentityIdentifier;
+use ockam::Context;
 use ockam_api::nodes::models::secure_channel::CreateSecureChannelResponse;
 use ockam_api::{clean_multiaddr, route_to_multiaddr};
-use ockam_core::{route};
+use ockam_core::route;
 use ockam_multiaddr::MultiAddr;
 
 #[derive(Clone, Debug, Args)]
@@ -41,19 +41,21 @@ impl CreateCommand {
         node_rpc(rpc, (opts, self));
     }
 
-    async fn rpc_callback(self, ctx: &ockam::Context, opts: CommandGlobalOpts) -> crate::Result<()> {    
-        let addr = clean_multiaddr(&self.addr, &opts.config.get_lookup())
-            .unwrap_or_else(|| {
-                eprintln!("failed to normalize MultiAddr route");
-                std::process::exit(exitcode::USAGE);
-            });  
+    async fn rpc_callback(
+        self,
+        ctx: &ockam::Context,
+        opts: CommandGlobalOpts,
+    ) -> crate::Result<()> {
+        let addr = clean_multiaddr(&self.addr, &opts.config.get_lookup()).unwrap_or_else(|| {
+            eprintln!("failed to normalize MultiAddr route");
+            std::process::exit(exitcode::USAGE);
+        });
 
         let mut rpc = Rpc::new(ctx, &opts, &self.node_opts.from)?;
-        
-        rpc.request(
-            api::create_secure_channel(addr, self.authorized_identifier)
-        ).await?;
-        
+
+        rpc.request(api::create_secure_channel(addr, self.authorized_identifier))
+            .await?;
+
         let res = rpc.parse_response::<CreateSecureChannelResponse>()?;
 
         route_to_multiaddr(&route![res.addr.to_string()])
@@ -62,7 +64,10 @@ impl CreateCommand {
     }
 }
 
-async fn rpc(mut ctx: Context, (opts, cmd): (CommandGlobalOpts, CreateCommand)) -> crate::Result<()> {
+async fn rpc(
+    mut ctx: Context,
+    (opts, cmd): (CommandGlobalOpts, CreateCommand),
+) -> crate::Result<()> {
     let res = cmd.rpc_callback(&mut ctx, opts).await;
     stop_node(ctx).await?;
     res

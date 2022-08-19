@@ -1,8 +1,8 @@
-use crate::util::{api, node_rpc, Rpc, stop_node};
+use crate::util::{api, node_rpc, stop_node, Rpc};
 use crate::CommandGlobalOpts;
 use clap::Args;
+use ockam::Context;
 use ockam_api::nodes::models::secure_channel::DeleteSecureChannelResponse;
-use ockam::{Context};
 
 #[derive(Clone, Debug, Args)]
 pub struct SecureChannelNodeOpts {
@@ -30,22 +30,30 @@ impl DeleteCommand {
         node_rpc(rpc, (opts, self));
     }
 
-    async fn rpc_callback(self, ctx: &ockam::Context, opts: CommandGlobalOpts) -> crate::Result<()> {    
+    async fn rpc_callback(
+        self,
+        ctx: &ockam::Context,
+        opts: CommandGlobalOpts,
+    ) -> crate::Result<()> {
         let ch = self.channel.clone();
-        
+
         let mut rpc = Rpc::new(ctx, &opts, &self.node_opts.at)?;
-        rpc.request(api::delete_secure_channel(self.channel.into())).await?;
+        rpc.request(api::delete_secure_channel(self.channel.into()))
+            .await?;
         let res = rpc.parse_response::<DeleteSecureChannelResponse>()?;
-    
+
         match res.channel {
-            Some(ch) => println!("deleted {}", ch),
+            Some(_) => println!("deleted {}", ch),
             None => println!("channel with address {} not found", ch),
         }
         Ok(())
     }
 }
 
-async fn rpc(mut ctx: Context, (opts, cmd): (CommandGlobalOpts, DeleteCommand)) -> crate::Result<()> {
+async fn rpc(
+    mut ctx: Context,
+    (opts, cmd): (CommandGlobalOpts, DeleteCommand),
+) -> crate::Result<()> {
     let res = cmd.rpc_callback(&mut ctx, opts).await;
     stop_node(ctx).await?;
     res
