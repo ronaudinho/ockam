@@ -1,6 +1,7 @@
 use crate::terminal::{Terminal, TerminalBackground};
 use colorful::Colorful;
 use syntect::{
+    dumps::dump_to_file,
     easy::HighlightLines,
     highlighting::{Style, ThemeSet},
     parsing::SyntaxSet,
@@ -42,9 +43,24 @@ pub fn highlight_syntax(input: String) -> String {
         TerminalBackground::Dark => "base16-ocean.dark",
         TerminalBackground::Unknown => return input,
     };
-    let theme_set = ThemeSet::load_defaults();
+    let theme_set = match ThemeSet::load_from_folder("./static/theme.dump") {
+        Ok(x) => x,
+        Err(_) => {
+            let theme_set = ThemeSet::load_defaults();
+            dump_to_file(&theme_set, "./static/theme.dump").unwrap();
+            theme_set
+        }
+    };
     let theme = &theme_set.themes[theme_name];
-    let syntax_set = SyntaxSet::load_defaults_newlines();
+
+    let syntax_set = match SyntaxSet::load_from_folder("./static/syntax.dump") {
+        Ok(x) => x,
+        Err(_) => {
+            let syntax_set = SyntaxSet::load_defaults_newlines();
+            dump_to_file(&syntax_set, "./static/syntax.dump").unwrap();
+            syntax_set
+        }
+    };
     let syntax = syntax_set.find_syntax_by_extension("sh").unwrap();
     let mut highlighter = HighlightLines::new(syntax, theme);
 
