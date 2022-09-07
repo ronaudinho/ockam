@@ -86,7 +86,6 @@ impl NodeManager {
                     alias.clone(),
                     InletInfo::new(&bind_addr, Some(&worker_addr)),
                 );
-                self.sessions.add(outlet_addr).await?;
 
                 Response::ok(req.id()).body(InletStatus::new(
                     bind_addr,

@@ -186,8 +186,7 @@ async fn rpc(ctx: Context, (options, command): (CommandGlobalOpts, CreateCommand
 
     // Delegate the request to create a secure channel to the from node.
     let mut rpc = RpcBuilder::new(&ctx, &options, from).tcp(&tcp)?.build();
-    let request = api::create_secure_channel(to, authorized_identifiers, credential_exchange_mode);
-
+    let request = api::create_secure_channel(to, authorized_identifiers, credential_exchange_mode, true);
     rpc.request(request).await?;
     let response = rpc.parse_response::<CreateSecureChannelResponse>()?;
 

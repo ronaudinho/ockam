@@ -1,4 +1,5 @@
 use crate::nodes::service::Alias;
+use crate::session;
 use ockam_core::compat::collections::BTreeMap;
 use ockam_core::{Address, Route};
 use ockam_identity::IdentityIdentifier;
@@ -22,13 +23,18 @@ impl SecureChannelRegistry {
         addr: Address,
         route: Route,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
+        session_key: Option<session::Key>
     ) {
         self.channels
-            .push(SecureChannelInfo::new(route, addr, authorized_identifiers))
+            .push(SecureChannelInfo::new(route, addr, authorized_identifiers, session_key))
     }
 
-    pub fn remove_by_addr(&mut self, addr: &Address) {
-        self.channels.retain(|x| x.addr() != addr)
+    pub fn remove_by_addr(&mut self, addr: &Address) -> Option<SecureChannelInfo> {
+        if let Some(i) = self.channels.iter().position(|ch| ch.addr() == addr) {
+            let info = self.channels.remove(i);
+            return Some(info)
+        }
+        None
     }
 
     pub fn list(&self) -> &[SecureChannelInfo] {
@@ -43,6 +49,7 @@ pub struct SecureChannelInfo {
     // Local address of the created channel
     addr: Address,
     authorized_identifiers: Option<Vec<IdentityIdentifier>>,
+    session_key: Option<session::Key>
 }
 
 impl SecureChannelInfo {
@@ -50,11 +57,13 @@ impl SecureChannelInfo {
         route: Route,
         addr: Address,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
+        session_key: Option<session::Key>
     ) -> Self {
         Self {
             addr,
             route,
             authorized_identifiers,
+            session_key
         }
     }
 
@@ -68,6 +77,10 @@ impl SecureChannelInfo {
 
     pub fn authorized_identifiers(&self) -> Option<&Vec<IdentityIdentifier>> {
         self.authorized_identifiers.as_ref()
+    }
+    
+    pub fn session_key(&self) -> Option<session::Key> {
+        self.session_key.clone()
     }
 }
 

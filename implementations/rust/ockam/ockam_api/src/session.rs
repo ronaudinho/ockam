@@ -1,4 +1,5 @@
 use core::fmt;
+use crate::nodes::service::map_multiaddr_err;
 use minicbor::{Encode, Decode};
 use ockam::{Worker, TransportMessage, LocalMessage};
 use ockam_core::{LOCAL, Address, Error, Route, Routed, Encodable, Decodable};
@@ -48,16 +49,23 @@ pub struct Key {
 #[cbor(transparent)]
 struct Ping(#[n(0)] u64);
 
-impl Sessions {
-    pub async fn add(&self, mut addr: MultiAddr) -> Result<Key, Error> {
-        if addr.iter().count() != 2 {
-            // TODO
+#[derive(Debug)]
+pub enum SessionAddr {
+    SecureChannel(MultiAddr)
+}
+
+impl From<SessionAddr> for MultiAddr {
+    fn from(sa: SessionAddr) -> Self {
+        match sa {
+            SessionAddr::SecureChannel(ma) => ma
         }
-        let addr = {
-            addr.drop_last();
-            addr.push_back(proto::Service::new(Responder::NAME)).unwrap();
-            addr
-        };
+    }
+}
+
+impl Sessions {
+    pub async fn add(&self, addr: SessionAddr) -> Result<Key, Error> {
+        let mut addr: MultiAddr = addr.into();
+        addr.push_back(proto::Service::new(Responder::NAME)).map_err(map_multiaddr_err)?;
         let mut this = self.0.lock().await;
         let n = this.0;
         this.0 = this.0.checked_add(1).ok_or_else(|| {

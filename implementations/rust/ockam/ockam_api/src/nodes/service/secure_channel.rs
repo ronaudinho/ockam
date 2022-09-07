@@ -7,6 +7,7 @@ use crate::nodes::models::secure_channel::{
 };
 use crate::nodes::NodeManager;
 use crate::DefaultAddress;
+use crate::session::SessionAddr;
 use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
 use ockam::{Address, Result, Route};
@@ -14,6 +15,7 @@ use ockam_core::api::{Request, Response, ResponseBuilder};
 use ockam_core::{route, AsyncTryClone};
 use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
+use ockam_multiaddr::proto::Service;
 
 impl NodeManager {
     async fn get_credential_if_needed(&self) -> Result<()> {
@@ -42,6 +44,7 @@ impl NodeManager {
         sc_route: Route,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
         credential_exchange_mode: CredentialExchangeMode,
+        monitor: bool
     ) -> Result<Address> {
         let identity = self.identity()?.async_try_clone().await?;
 
@@ -77,9 +80,18 @@ impl NodeManager {
 
         trace!(%sc_route, %sc_addr, "Created secure channel");
 
+        let session_key = if monitor {
+            let mut ma = MultiAddr::default();
+            ma.push_back(Service::new(sc_addr.address())).map_err(map_multiaddr_err)?;
+            let sa = SessionAddr::SecureChannel(ma);
+            Some(self.sessions.add(sa).await?)
+        } else {
+            None
+        };
+
         self.registry
             .secure_channels
-            .insert(sc_addr.clone(), sc_route, authorized_identifiers);
+            .insert(sc_addr.clone(), sc_route, authorized_identifiers, session_key);
 
         match credential_exchange_mode {
             CredentialExchangeMode::None => {
@@ -121,6 +133,7 @@ impl NodeManager {
             addr,
             authorized_identifiers,
             credential_exchange_mode,
+            monitor,
             ..
         } = dec.decode()?;
 
@@ -144,7 +157,7 @@ impl NodeManager {
             .ok_or_else(|| ApiError::generic("Invalid Multiaddr"))?;
 
         let channel = self
-            .create_secure_channel_impl(route, authorized_identifiers, credential_exchange_mode)
+            .create_secure_channel_impl(route, authorized_identifiers, credential_exchange_mode, monitor.unwrap_or(false))
             .await?;
 
         let response = Response::ok(req.id()).body(CreateSecureChannelResponse::new(&channel));
@@ -173,7 +186,11 @@ impl NodeManager {
         let res = match identity.stop_secure_channel(&sc_address).await {
             Ok(()) => {
                 trace!(%sc_address, "Removed secure channel");
-                self.registry.secure_channels.remove_by_addr(&sc_address);
+                if let Some(info) = self.registry.secure_channels.remove_by_addr(&sc_address) {
+                    if let Some(k) = info.session_key() {
+                        self.sessions.remove(k).await
+                    }
+                }
                 Some(sc_address)
             }
             Err(err) => {

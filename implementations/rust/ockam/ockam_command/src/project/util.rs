@@ -108,6 +108,7 @@ async fn create_secure_channel_to_project(
         project_access_route,
         Some(authorized_identifier),
         credential_exchange_mode,
+        false
     ))
     .await?;
     let sc = rpc.parse_response::<CreateSecureChannelResponse>()?;

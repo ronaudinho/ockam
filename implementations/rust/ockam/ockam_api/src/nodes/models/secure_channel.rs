@@ -31,6 +31,7 @@ pub struct CreateSecureChannelRequest<'a> {
     #[b(1)] pub addr: CowStr<'a>,
     #[b(2)] pub authorized_identifiers: Option<Vec<CowStr<'a>>>,
     #[n(3)] pub credential_exchange_mode: CredentialExchangeMode,
+    #[n(4)] pub monitor: Option<bool>
 }
 
 impl<'a> CreateSecureChannelRequest<'a> {
@@ -46,6 +47,7 @@ impl<'a> CreateSecureChannelRequest<'a> {
             authorized_identifiers: authorized_identifiers
                 .map(|x| x.into_iter().map(|y| y.to_string().into()).collect()),
             credential_exchange_mode,
+            monitor: None
         }
     }
 }
