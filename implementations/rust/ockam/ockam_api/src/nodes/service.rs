@@ -10,8 +10,11 @@ use ockam::{Address, Context, ForwardingService, Result, Routed, TcpTransport, W
 use ockam_core::api::{Method, Request, Response, Status};
 use ockam_core::compat::{boxed::Box, string::String};
 use ockam_core::errcode::{Kind, Origin};
+use ockam_core::AsyncTryClone;
 use ockam_identity::{Identity, IdentityIdentifier, PublicIdentity};
 use ockam_multiaddr::MultiAddr;
+use ockam_node::tokio::task::JoinHandle;
+use ockam_node::tokio;
 use ockam_vault::storage::FileStorage;
 use ockam_vault::Vault;
 
@@ -23,6 +26,7 @@ use crate::nodes::config::NodeManConfig;
 use crate::nodes::models::base::NodeStatus;
 use crate::nodes::models::transport::{TransportMode, TransportType};
 use crate::DefaultAddress;
+use crate::session::{self, Medic, Sessions};
 
 pub mod message;
 
@@ -97,6 +101,14 @@ pub struct NodeManager {
     authorities: Option<Authorities>,
     pub(crate) authenticated_storage: LmdbStorage,
     pub(crate) registry: Registry,
+    sessions: Sessions,
+    medic: JoinHandle<Result<(), ockam_core::Error>>
+}
+
+impl Drop for NodeManager {
+    fn drop(&mut self) {
+        self.medic.abort()
+    }
 }
 
 pub struct IdentityOverride {
@@ -200,6 +212,9 @@ impl NodeManager {
             None => None,
         };
 
+        let medic = Medic::new();
+        let sessions = medic.sessions();
+
         let mut s = Self {
             node_name,
             node_dir,
@@ -214,6 +229,11 @@ impl NodeManager {
             authorities: None,
             authenticated_storage,
             registry: Default::default(),
+            medic: {
+                let ctx = ctx.async_try_clone().await?;
+                tokio::spawn(medic.start(ctx))
+            },
+            sessions
         };
 
         if !skip_defaults {
@@ -223,6 +243,8 @@ impl NodeManager {
                 s.configure_authorities(ac).await?;
             }
         }
+
+        ctx.start_worker(session::Responder::address(), session::Responder::new()).await?;
 
         Ok(s)
     }
