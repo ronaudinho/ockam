@@ -16,6 +16,8 @@ use ockam_core::{route, AsyncTryClone};
 use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
 use ockam_multiaddr::proto::Service;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 impl NodeManager {
     async fn get_credential_if_needed(&self) -> Result<()> {
@@ -81,9 +83,7 @@ impl NodeManager {
         trace!(%sc_route, %sc_addr, "Created secure channel");
 
         let session_key = if monitor {
-            let mut ma = MultiAddr::default();
-            ma.push_back(Service::new(sc_addr.address())).map_err(map_multiaddr_err)?;
-            let sa = SessionAddr::SecureChannel(ma);
+            let sa = SessionAddr::SecureChannel(sc_addr.clone());
             Some(self.sessions.add(sa).await?)
         } else {
             None
