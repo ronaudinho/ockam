@@ -1,8 +1,9 @@
 use crate::nodes::service::Alias;
-use crate::session;
 use ockam_core::compat::collections::BTreeMap;
 use ockam_core::{Address, Route};
 use ockam_identity::IdentityIdentifier;
+
+use super::models::secure_channel::CredentialExchangeMode;
 
 #[derive(Default)]
 pub(crate) struct SecureChannelRegistry {
@@ -18,15 +19,8 @@ impl SecureChannelRegistry {
         self.channels.iter().find(|&x| x.addr() == addr)
     }
 
-    pub fn insert(
-        &mut self,
-        addr: Address,
-        route: Route,
-        authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-        session_key: Option<session::Key>
-    ) {
-        self.channels
-            .push(SecureChannelInfo::new(route, addr, authorized_identifiers, session_key))
+    pub fn insert(&mut self, info: SecureChannelInfo) {
+        self.channels.push(info)
     }
 
     pub fn remove_by_addr(&mut self, addr: &Address) -> Option<SecureChannelInfo> {
@@ -42,14 +36,14 @@ impl SecureChannelRegistry {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SecureChannelInfo {
     // Target route of the channel
     route: Route,
     // Local address of the created channel
     addr: Address,
     authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-    session_key: Option<session::Key>
+    mode: CredentialExchangeMode
 }
 
 impl SecureChannelInfo {
@@ -57,13 +51,13 @@ impl SecureChannelInfo {
         route: Route,
         addr: Address,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-        session_key: Option<session::Key>
+        mode: CredentialExchangeMode
     ) -> Self {
         Self {
             addr,
             route,
             authorized_identifiers,
-            session_key
+            mode
         }
     }
 
@@ -79,8 +73,8 @@ impl SecureChannelInfo {
         self.authorized_identifiers.as_ref()
     }
     
-    pub fn session_key(&self) -> Option<session::Key> {
-        self.session_key.clone()
+    pub fn mode(&self) -> CredentialExchangeMode {
+        self.mode
     }
 }
 

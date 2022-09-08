@@ -1,6 +1,8 @@
 use core::fmt;
-use crate::nodes::models::secure_channel::DeleteSecureChannelRequest;
+use crate::nodes::models::secure_channel::{DeleteSecureChannelRequest, CreateSecureChannelRequest};
+use crate::nodes::registry::SecureChannelInfo;
 use crate::nodes::service::map_multiaddr_err;
+use crate::route_to_multiaddr;
 use minicbor::{Encode, Decode};
 use ockam::{Worker, TransportMessage, LocalMessage};
 use ockam_core::api::Request;
@@ -33,6 +35,7 @@ pub struct Sessions(Arc<Mutex<(u32, HashMap<Key, Session>)>>);
 struct Session {
     addr: MultiAddr,
     route: Route,
+    info: SecureChannelInfo,
     pings: ArrayVec<[Ping; MAX_FAILURES]>
 }
 
@@ -52,24 +55,10 @@ pub struct Key {
 #[cbor(transparent)]
 struct Ping(#[n(0)] u64);
 
-#[derive(Debug)]
-pub enum SessionAddr {
-    SecureChannel(Address)
-}
-
-impl From<SessionAddr> for Address {
-    fn from(sa: SessionAddr) -> Self {
-        match sa {
-            SessionAddr::SecureChannel(a) => a
-        }
-    }
-}
-
 impl Sessions {
-    pub async fn add(&self, addr: SessionAddr) -> Result<Key, Error> {
-        let addr: Address = addr.into();
+    pub async fn add(&self, info: SecureChannelInfo) -> Result<Key, Error> {
         let mut ma = MultiAddr::default();
-        ma.push_back(proto::Service::new(addr.address())).map_err(map_multiaddr_err)?;
+        ma.push_back(proto::Service::new(info.addr().address())).map_err(map_multiaddr_err)?;
         ma.push_back(proto::Service::new(Responder::NAME)).map_err(map_multiaddr_err)?;
         let mut this = self.0.lock().await;
         let n = this.0;
@@ -79,14 +68,9 @@ impl Sessions {
         let key = Key::new(n);
         let r = crate::try_multiaddr_to_route(&ma)?;
         log::debug!(%key, addr = %ma, "add session");
-        let s = Session { addr: ma, route: r, pings: ArrayVec::new() };
+        let s = Session { addr: ma, route: r, info, pings: ArrayVec::new() };
         this.1.insert(key, s);
         Ok(key)
-    }
-
-    pub async fn remove(&self, key: Key) {
-        log::debug!(%key, "remove session");
-        self.0.lock().await.1.remove(&key);
     }
 }
 
@@ -114,12 +98,12 @@ impl Medic {
     async fn go(self, ctx: Context, mut rx: mpsc::Receiver<Message>) -> ! {
         let mut zombies = Vec::new();
         loop {
-            log::trace!("check sessions");
+            log::debug!("check sessions");
             for (k, s) in &mut self.sessions.0.lock().await.1 {
                 if s.pings.len() < MAX_FAILURES {
                     let m = Message::new(*k);
                     s.pings.push(m.ping);
-                    log::trace!(key = %k, ping = %m.ping, "send ping");
+                    log::debug!(key = %k, ping = %m.ping, "send ping");
                     let l = {
                         let v = Encodable::encode(&m).expect("message can be encoded");
                         let t = TransportMessage::v1(s.route.clone(), Collector::address(), v);
@@ -133,22 +117,30 @@ impl Medic {
                     zombies.push(*k)
                 }
             }
+            // temporary test code to trigger channel re-creation:
             for z in zombies.drain(..) {
                 if let Some(s) = self.sessions.0.lock().await.1.remove(&z) {
-                    let v = s.addr.first().unwrap();
-                    let a: proto::Service = v.cast().unwrap();
+                    log::debug!(key = %z, local = %s.info.addr(), "deleting secure channel");
                     let req = Request::delete("/node/secure_channel")
-                        .body(DeleteSecureChannelRequest::new(&(*a).into()))
+                        .body(DeleteSecureChannelRequest::new(s.info.addr()))
                         .to_vec()
                         .unwrap();
-                    ctx.send(self.manager.clone(), req).await.unwrap()
+                    ctx.send(self.manager.clone(), req).await.unwrap();
+                    let ma = route_to_multiaddr(s.info.route()).unwrap();
+                    log::debug!(key = %z, remote = %ma, "creating secure channel");
+                    let ai = s.info.authorized_identifiers().cloned();
+                    let req = Request::post("/node/secure_channel")
+                        .body(CreateSecureChannelRequest::new(&ma, ai, s.info.mode()))
+                        .to_vec()
+                        .unwrap();
+                    ctx.send(self.manager.clone(), req).await.unwrap();
                 }
             }
             time::sleep(self.delay).await;
             while let Ok(m) = rx.try_recv() {
                 if let Some(s) = self.sessions.0.lock().await.1.get_mut(&m.key) {
                     if s.pings.contains(&m.ping) {
-                        log::trace!(key = %m.key, ping = %m.ping, "recv pong");
+                        log::debug!(key = %m.key, ping = %m.ping, "recv pong");
                         s.pings.clear()
                     }
                 }
@@ -244,7 +236,7 @@ impl Worker for Responder {
     async fn handle_message(&mut self, ctx: &mut Context, msg: Routed<Self::Message>) -> Result<(), Error> {
         let r = msg.return_route();
         let m = msg.body();
-        log::trace!(key = %m.key, ping = %m.ping, "send pong");
+        log::debug!(key = %m.key, ping = %m.ping, "send pong");
         ctx.send(r, m).await
     }
 }

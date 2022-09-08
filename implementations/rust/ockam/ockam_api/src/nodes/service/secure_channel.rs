@@ -7,7 +7,7 @@ use crate::nodes::models::secure_channel::{
 };
 use crate::nodes::NodeManager;
 use crate::DefaultAddress;
-use crate::session::SessionAddr;
+use crate::nodes::registry::SecureChannelInfo;
 use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
 use ockam::{Address, Result, Route};
@@ -15,9 +15,6 @@ use ockam_core::api::{Request, Response, ResponseBuilder};
 use ockam_core::{route, AsyncTryClone};
 use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
-use ockam_multiaddr::proto::Service;
-use std::collections::HashSet;
-use std::sync::Arc;
 
 impl NodeManager {
     async fn get_credential_if_needed(&self) -> Result<()> {
@@ -82,16 +79,18 @@ impl NodeManager {
 
         trace!(%sc_route, %sc_addr, "Created secure channel");
 
-        let session_key = if monitor {
-            let sa = SessionAddr::SecureChannel(sc_addr.clone());
-            Some(self.sessions.add(sa).await?)
-        } else {
-            None
-        };
+        let info = SecureChannelInfo::new(
+            sc_route,
+            sc_addr.clone(),
+            authorized_identifiers,
+            credential_exchange_mode
+        );
 
-        self.registry
-            .secure_channels
-            .insert(sc_addr.clone(), sc_route, authorized_identifiers, session_key);
+        self.registry.secure_channels.insert(info.clone());
+
+        if monitor {
+            self.sessions.add(info).await?;
+        }
 
         match credential_exchange_mode {
             CredentialExchangeMode::None => {
@@ -186,11 +185,7 @@ impl NodeManager {
         let res = match identity.stop_secure_channel(&sc_address).await {
             Ok(()) => {
                 trace!(%sc_address, "Removed secure channel");
-                if let Some(info) = self.registry.secure_channels.remove_by_addr(&sc_address) {
-                    if let Some(k) = info.session_key() {
-                        self.sessions.remove(k).await
-                    }
-                }
+                self.registry.secure_channels.remove_by_addr(&sc_address);
                 Some(sc_address)
             }
             Err(err) => {
