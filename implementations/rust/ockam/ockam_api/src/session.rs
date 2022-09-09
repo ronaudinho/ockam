@@ -1,11 +1,8 @@
 use core::fmt;
-use crate::nodes::models::secure_channel::{DeleteSecureChannelRequest, CreateSecureChannelRequest};
 use crate::nodes::registry::SecureChannelInfo;
 use crate::nodes::service::map_multiaddr_err;
-use crate::route_to_multiaddr;
 use minicbor::{Encode, Decode};
 use ockam::{Worker, TransportMessage, LocalMessage};
-use ockam_core::api::Request;
 use ockam_core::{LOCAL, Address, Error, Route, Routed, Encodable, Decodable};
 use ockam_core::errcode::{Kind, Origin};
 use ockam_core::compat::rand;
@@ -16,10 +13,61 @@ use ockam_node::Context;
 use ockam_node::tokio::time::{self, Duration};
 use ockam_node::tokio::sync::mpsc;
 use ockam_node::tokio::sync::Mutex;
+use petgraph::stable_graph::StableDiGraph;
+use petgraph::graph::NodeIndex;
+use petgraph::Direction;
 use tinyvec::ArrayVec;
 use tracing as log;
 
 const MAX_FAILURES: usize = 3;
+
+#[derive(Debug)]
+struct Node { worker: Address }
+
+#[derive(Debug, Copy, Clone)]
+struct Ref(NodeIndex);
+
+#[derive(Debug)]
+struct Dependencies(StableDiGraph<Node, ()>);
+
+impl Dependencies {
+    fn new() -> Self {
+        Self(StableDiGraph::new())
+    }
+    
+    fn add_node(&mut self, a: Address) -> Ref {
+        Ref(self.0.add_node(Node { worker: a }))
+    }
+
+    fn node(&self, r: Ref) -> Option<&Node> {
+        self.0.node_weight(r.0)
+    }
+    
+    fn find_node(&self, a: &Address) -> Option<Ref> {
+        for i in self.0.node_indices() {
+            if self.0[i].worker == *a {
+                return Some(Ref(i))
+            }
+        }
+        None
+    }
+    
+    fn add_dependency(&mut self, from: Ref, to: Ref) -> bool {
+        if !self.0.contains_node(from.0) || !self.0.contains_node(to.0) {
+            return false
+        }
+        self.0.add_edge(from.0, to.0, ());
+        true
+    }
+
+    fn dependencies(&self, r: Ref) -> impl Iterator<Item = Ref> + '_ {
+        self.0.neighbors_directed(r.0, Direction::Outgoing).map(Ref)
+    }
+
+    fn dependents(&self, r: Ref) -> impl Iterator<Item = Ref> + '_ {
+        self.0.neighbors_directed(r.0, Direction::Incoming).map(Ref)
+    }
+}
 
 #[derive(Debug)]
 pub struct Medic {
@@ -29,12 +77,20 @@ pub struct Medic {
 }
 
 #[derive(Debug)]
-pub struct Sessions(Arc<Mutex<(u32, HashMap<Key, Session>)>>);
+pub struct Sessions(Arc<Mutex<SessionsImpl>>);
+
+#[derive(Debug)]
+struct SessionsImpl {
+    ctr: u32,
+    ses: HashMap<Key, Session>,
+    dep: Dependencies
+}
 
 #[derive(Debug)]
 struct Session {
     addr: MultiAddr,
     route: Route,
+    ptr: Ref,
     info: SecureChannelInfo,
     pings: ArrayVec<[Ping; MAX_FAILURES]>
 }
@@ -61,26 +117,44 @@ impl Sessions {
         ma.push_back(proto::Service::new(info.addr().address())).map_err(map_multiaddr_err)?;
         ma.push_back(proto::Service::new(Responder::NAME)).map_err(map_multiaddr_err)?;
         let mut this = self.0.lock().await;
-        let n = this.0;
-        this.0 = this.0.checked_add(1).ok_or_else(|| {
+        let n = this.ctr;
+        this.ctr = this.ctr.checked_add(1).ok_or_else(|| {
             Error::new(Origin::Other, Kind::Internal, "Sessions::ctr overflow")
         })?;
         let key = Key::new(n);
         let r = crate::try_multiaddr_to_route(&ma)?;
         log::debug!(%key, addr = %ma, "add session");
-        let s = Session { addr: ma, route: r, info, pings: ArrayVec::new() };
-        this.1.insert(key, s);
+        let p = this.dep.add_node(info.addr().clone());
+        for a in info.route().iter().filter(|a| a.is_local()) {
+            if let Some(r) = this.dep.find_node(a) {
+                this.dep.add_dependency(p, r);
+            }
+        }
+        let s = Session { addr: ma, route: r, ptr: p, info, pings: ArrayVec::new() };
+        this.ses.insert(key, s);
         Ok(key)
+    }
+
+    pub async fn add_dependency(&self, from: &Address, to: Address) {
+        log::debug!(%from, %to, "add dependency");
+        let mut this = self.0.lock().await;
+        let p = this.dep.add_node(to);
+        if let Some(r) = this.dep.find_node(from) {
+            this.dep.add_dependency(p, r);
+        }
     }
 }
 
 impl Medic {
     pub fn new(manager: Address) -> Self {
-        let s = Sessions(Arc::new(Mutex::new((0, HashMap::new()))));
         Self {
             delay: Duration::from_secs(7),
             manager,
-            sessions: s
+            sessions: Sessions(Arc::new(Mutex::new(SessionsImpl {
+                ctr: 0,
+                ses: HashMap::new(),
+                dep: Dependencies::new()
+            })))
         }
     }
 
@@ -99,7 +173,7 @@ impl Medic {
         let mut zombies = Vec::new();
         loop {
             log::debug!("check sessions");
-            for (k, s) in &mut self.sessions.0.lock().await.1 {
+            for (k, s) in &mut self.sessions.0.lock().await.ses {
                 if s.pings.len() < MAX_FAILURES {
                     let m = Message::new(*k);
                     s.pings.push(m.ping);
@@ -117,28 +191,20 @@ impl Medic {
                     zombies.push(*k)
                 }
             }
-            // temporary test code to trigger channel re-creation:
             for z in zombies.drain(..) {
-                if let Some(s) = self.sessions.0.lock().await.1.remove(&z) {
-                    log::debug!(key = %z, local = %s.info.addr(), "deleting secure channel");
-                    let req = Request::delete("/node/secure_channel")
-                        .body(DeleteSecureChannelRequest::new(s.info.addr()))
-                        .to_vec()
-                        .unwrap();
-                    ctx.send(self.manager.clone(), req).await.unwrap();
-                    let ma = route_to_multiaddr(s.info.route()).unwrap();
-                    log::debug!(key = %z, remote = %ma, "creating secure channel");
-                    let ai = s.info.authorized_identifiers().cloned();
-                    let req = Request::post("/node/secure_channel")
-                        .body(CreateSecureChannelRequest::new(&ma, ai, s.info.mode()))
-                        .to_vec()
-                        .unwrap();
-                    ctx.send(self.manager.clone(), req).await.unwrap();
+                let mut sessions = self.sessions.0.lock().await;
+                if let Some(s) = sessions.ses.remove(&z) {
+                    for d in sessions.dep.dependencies(s.ptr) {
+                        log::debug!("dependency {:?}", sessions.dep.node(d));
+                    }
+                    for d in sessions.dep.dependents(s.ptr) {
+                        log::debug!("dependent {:?}", sessions.dep.node(d));
+                    }
                 }
             }
             time::sleep(self.delay).await;
             while let Ok(m) = rx.try_recv() {
-                if let Some(s) = self.sessions.0.lock().await.1.get_mut(&m.key) {
+                if let Some(s) = self.sessions.0.lock().await.ses.get_mut(&m.key) {
                     if s.pings.contains(&m.ping) {
                         log::debug!(key = %m.key, ping = %m.ping, "recv pong");
                         s.pings.clear()
