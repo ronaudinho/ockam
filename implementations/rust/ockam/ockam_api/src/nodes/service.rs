@@ -26,7 +26,7 @@ use crate::nodes::config::NodeManConfig;
 use crate::nodes::models::base::NodeStatus;
 use crate::nodes::models::transport::{TransportMode, TransportType};
 use crate::DefaultAddress;
-use crate::session::{self, Medic, Sessions};
+use crate::session::{self, Medic, SessionMap};
 
 pub mod message;
 
@@ -101,7 +101,7 @@ pub struct NodeManager {
     authorities: Option<Authorities>,
     pub(crate) authenticated_storage: LmdbStorage,
     pub(crate) registry: Registry,
-    sessions: Sessions,
+    sessions: SessionMap,
     medic: JoinHandle<Result<(), ockam_core::Error>>
 }
 
@@ -213,7 +213,7 @@ impl NodeManager {
             None => None,
         };
 
-        let medic = Medic::new(address.into());
+        let medic = Medic::new();
         let sessions = medic.sessions();
 
         let mut s = Self {

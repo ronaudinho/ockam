@@ -88,7 +88,7 @@ impl Context {
     }
 
     /// Return a reference to sender
-    pub(crate) fn sender(&self) -> &SmallSender<NodeMessage> {
+    pub fn sender(&self) -> &SmallSender<NodeMessage> {
         &self.sender
     }
 

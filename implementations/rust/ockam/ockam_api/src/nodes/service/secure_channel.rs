@@ -89,7 +89,7 @@ impl NodeManager {
         self.registry.secure_channels.insert(info.clone());
 
         if monitor {
-            self.sessions.add(info).await?;
+            self.sessions.add(info)?;
         }
 
         match credential_exchange_mode {
