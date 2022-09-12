@@ -87,9 +87,9 @@ impl NodeManager {
                     InletInfo::new(&bind_addr, Some(&worker_addr)),
                 );
 
-                for a in outlet_route.iter().filter(|a| a.is_local()) {
-                    self.sessions.add_dependency(a, worker_addr.clone()).await
-                }
+                // for a in outlet_route.iter().filter(|a| a.is_local()) {
+                //     self.sessions.add_dependency(a, worker_addr.clone()).await
+                // }
 
                 Response::ok(req.id()).body(InletStatus::new(
                     bind_addr,

@@ -1,4 +1,6 @@
 use core::fmt;
+use core::future::Future;
+use core::pin::Pin;
 use crate::nodes::registry::SecureChannelInfo;
 use crate::nodes::service::map_multiaddr_err;
 use minicbor::{Encode, Decode};
@@ -10,6 +12,8 @@ use ockam_core::compat::collections::HashMap;
 use ockam_core::compat::sync::Arc;
 use ockam_multiaddr::{MultiAddr, proto};
 use ockam_node::Context;
+use ockam_node::tokio;
+use ockam_node::tokio::task::JoinHandle;
 use ockam_node::tokio::time::{self, Duration};
 use ockam_node::tokio::sync::mpsc;
 use ockam_node::tokio::sync::Mutex;
@@ -21,8 +25,35 @@ use tracing as log;
 
 const MAX_FAILURES: usize = 3;
 
+type Restart = Pin<Box<dyn Future<Output = Result<Address, Error>> + Send>>;
+
+struct Node {
+    worker: Address,
+    status: Status,
+    restarter: Option<Box<dyn FnMut() -> Restart + Send>>
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Node")
+            .field("worker", &self.worker)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
-struct Node { worker: Address }
+enum Status {
+    Down,
+    Starting(JoinHandle<Result<Address, Error>>),
+    Up
+}
+
+impl Status {
+    fn is_up(&self) -> bool {
+        matches!(self, Status::Up)
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 struct Ref(NodeIndex);
@@ -34,15 +65,26 @@ impl Dependencies {
     fn new() -> Self {
         Self(StableDiGraph::new())
     }
-    
+
     fn add_node(&mut self, a: Address) -> Ref {
-        Ref(self.0.add_node(Node { worker: a }))
+        if let Some(r) = self.find_node(&a) {
+            return r
+        }
+        Ref(self.0.add_node(Node {
+            worker: a,
+            status: Status::Up,
+            restarter: None
+        }))
     }
 
     fn node(&self, r: Ref) -> Option<&Node> {
         self.0.node_weight(r.0)
     }
-    
+
+    fn node_mut(&mut self, r: Ref) -> Option<&mut Node> {
+        self.0.node_weight_mut(r.0)
+    }
+
     fn find_node(&self, a: &Address) -> Option<Ref> {
         for i in self.0.node_indices() {
             if self.0[i].worker == *a {
@@ -51,7 +93,7 @@ impl Dependencies {
         }
         None
     }
-    
+
     fn add_dependency(&mut self, from: Ref, to: Ref) -> bool {
         if !self.0.contains_node(from.0) || !self.0.contains_node(to.0) {
             return false
@@ -60,12 +102,26 @@ impl Dependencies {
         true
     }
 
-    fn dependencies(&self, r: Ref) -> impl Iterator<Item = Ref> + '_ {
-        self.0.neighbors_directed(r.0, Direction::Outgoing).map(Ref)
+    fn dependencies(&self, r: Ref) -> impl Iterator<Item = (Ref, &Node)> + '_ {
+        self.0.neighbors_directed(r.0, Direction::Outgoing)
+            .filter_map(|r| {
+                if let Some(n) = self.node(Ref(r)) {
+                    Some((Ref(r), n))
+                } else {
+                    None
+                }
+            })
     }
 
-    fn dependents(&self, r: Ref) -> impl Iterator<Item = Ref> + '_ {
-        self.0.neighbors_directed(r.0, Direction::Incoming).map(Ref)
+    fn dependents(&self, r: Ref) -> impl Iterator<Item = (Ref, &Node)> + '_ {
+        self.0.neighbors_directed(r.0, Direction::Incoming)
+            .filter_map(|r| {
+                if let Some(n) = self.node(Ref(r)) {
+                    Some((Ref(r), n))
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -125,24 +181,22 @@ impl Sessions {
         let r = crate::try_multiaddr_to_route(&ma)?;
         log::debug!(%key, addr = %ma, "add session");
         let p = this.dep.add_node(info.addr().clone());
-        for a in info.route().iter().filter(|a| a.is_local()) {
-            if let Some(r) = this.dep.find_node(a) {
-                this.dep.add_dependency(p, r);
-            }
+        for a in info.route().iter().filter(|a| a.is_local() && a.address() != "api") {
+            let t = this.dep.add_node(a.clone());
+            this.dep.add_dependency(p, t);
         }
         let s = Session { addr: ma, route: r, ptr: p, info, pings: ArrayVec::new() };
         this.ses.insert(key, s);
         Ok(key)
     }
 
-    pub async fn add_dependency(&self, from: &Address, to: Address) {
-        log::debug!(%from, %to, "add dependency");
-        let mut this = self.0.lock().await;
-        let p = this.dep.add_node(to);
-        if let Some(r) = this.dep.find_node(from) {
-            this.dep.add_dependency(p, r);
-        }
-    }
+    // pub async fn add_dependency(&self, from: &Address, to: Address) {
+    //     let mut this = self.0.lock().await;
+    //     let p = this.dep.add_node(to);
+    //     if let Some(r) = this.dep.find_node(from) {
+    //         this.dep.add_dependency(p, r);
+    //     }
+    // }
 }
 
 impl Medic {
@@ -193,12 +247,19 @@ impl Medic {
             }
             for z in zombies.drain(..) {
                 let mut sessions = self.sessions.0.lock().await;
-                if let Some(s) = sessions.ses.remove(&z) {
-                    for d in sessions.dep.dependencies(s.ptr) {
-                        log::debug!("dependency {:?}", sessions.dep.node(d));
+                if let Some(p) = sessions.ses.get(&z).map(|s| s.ptr) {
+                    if let Some(m) = sessions.dep.dependencies(p).find(|n| !n.1.status.is_up()) {
+                        log::debug!(addr = %m.1.worker, "waiting for dependency");
+                        continue
                     }
-                    for d in sessions.dep.dependents(s.ptr) {
-                        log::debug!("dependent {:?}", sessions.dep.node(d));
+                    if let Some(mut n) = sessions.dep.node_mut(p) {
+                        if n.status.is_up() {
+                            if let Some(f) = &mut n.restarter {
+                                n.status = Status::Starting(tokio::spawn(f()))
+                            } else {
+                                n.status = Status::Down
+                            }
+                        }
                     }
                 }
             }
