@@ -1,16 +1,19 @@
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
+use ockam_core::Error;
 use petgraph::stable_graph::StableDiGraph;
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
+use crate::session::map::Key;
 
-pub type Replacement<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+pub type Replacement<T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send>>;
 
 pub struct Node<T> {
     data: T,
+    key: Option<Key>,
     status: Status,
-    replace: Option<Box<dyn FnMut(Option<T>) -> Replacement<T> + Send>>
+    replace: Option<Box<dyn Fn(Option<T>) -> Replacement<T> + Send>>
 }
 
 impl<T> Node<T> {
@@ -22,16 +25,40 @@ impl<T> Node<T> {
         matches!(self.status, Status::Up)
     }
 
+    pub fn is_starting(&self) -> bool {
+        matches!(self.status, Status::Starting)
+    }
+
     pub fn down(&mut self) {
         self.status = Status::Down
     }
 
-    pub fn up(&mut self) {
-        self.status = Status::Up
+    pub fn starting(&mut self) {
+        self.status = Status::Starting
     }
 
-    pub fn replacement(&mut self, dep: Option<T>) -> Option<Replacement<T>> {
-        self.replace.as_mut().map(|f| f(dep))
+    pub fn up(&mut self, data: T) {
+        self.status = Status::Up;
+        self.data = data;
+    }
+
+    pub fn key(&self) -> Option<Key> {
+        self.key
+    }
+
+    pub fn set_key(&mut self, k: Key) {
+        self.key = Some(k)
+    }
+
+    pub fn replacement(&self, dep: Option<T>) -> Option<Replacement<T>> {
+        self.replace.as_ref().map(|f| f(dep))
+    }
+
+    pub fn set_replacement<F>(&mut self, f: F)
+    where
+        F: Fn(Option<T>) -> Replacement<T> + Send + 'static
+    {
+        self.replace = Some(Box::new(f))
     }
 }
 
@@ -45,9 +72,9 @@ impl<T: fmt::Debug> fmt::Debug for Node<T> {
 }
 
 #[derive(Debug)]
-enum Status { Down, Up }
+enum Status { Down, Starting, Up }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Ref(NodeIndex);
 
 #[derive(Debug)]
@@ -62,7 +89,7 @@ impl<T: PartialEq> Dependencies<T> {
         if let Some(r) = self.find_node(&data) {
             return r
         }
-        Ref(self.0.add_node(Node { data, status: Status::Up, replace: None }))
+        Ref(self.0.add_node(Node { data, status: Status::Up, key: None, replace: None }))
     }
 
     pub fn find_node(&self, a: &T) -> Option<Ref> {

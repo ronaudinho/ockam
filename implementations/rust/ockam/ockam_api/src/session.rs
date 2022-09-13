@@ -8,10 +8,10 @@ use ockam_node::{Context, NodeMessage, RelayMessage};
 use ockam_node::channel_types::{SmallSender, small_channel};
 use ockam_node::tokio;
 use ockam_node::tokio::task::JoinSet;
-use ockam_node::tokio::time::{self, Duration};
+use ockam_node::tokio::time::{timeout, Duration};
 use ockam_node::tokio::sync::mpsc;
 use tracing as log;
-use deps::{Dependencies, Ref};
+use deps::{Dependencies, Ref, Replacement};
 use map::{MAX_FAILURES, Key, Ping};
 
 pub use map::SessionMap;
@@ -20,8 +20,8 @@ pub use map::SessionMap;
 pub struct Medic {
     delay: Duration,
     sessions: SessionMap,
-    pings: JoinSet<Result<(), Error>>,
-    replacements: JoinSet<Address>
+    pings: JoinSet<Result<Key, (Key, Error)>>,
+    replacements: JoinSet<(Key, Result<Address, Error>)>
 }
 
 #[derive(Debug, Copy, Clone, Encode, Decode)]
@@ -52,14 +52,19 @@ impl Medic {
     }
 
     async fn go(mut self, ctx: Context, mut rx: mpsc::Receiver<Message>) -> ! {
+        let mut dependencies = Vec::new();
         loop {
             log::debug!("check sessions");
             {
                 let mut sessions = self.sessions.0.lock().unwrap();
                 let (ses, dep) = sessions.split_borrow();
-                for (k, s) in ses {
+                for (&k, s) in ses {
+                    if dep.dependents(s.ptr).count() > 0 {
+                        log::debug!(key = %k, "skip node with dependent nodes");
+                        continue
+                    }
                     if s.pings.len() < MAX_FAILURES {
-                        let m = Message::new(*k);
+                        let m = Message::new(k);
                         s.pings.push(m.ping);
                         log::debug!(key = %k, ping = %m.ping, "send ping");
                         let l = {
@@ -67,18 +72,43 @@ impl Medic {
                             let t = TransportMessage::v1(s.route.clone(), Collector::address(), v);
                             LocalMessage::new(t, Vec::new())
                         };
-                        self.pings.spawn(forward(ctx.sender().clone(), l));
+                        let sender = ctx.sender().clone();
+                        self.pings.spawn(async move {
+                            forward(sender, l).await.map_err(|e| (k, e))?;
+                            Ok(k)
+                        });
                     } else {
-                        log::warn!(key = %k, addr = %s.addr, "session unresponsive");
+                        log::warn!(key = %k, "session unresponsive");
                         if let Some(m) = dep.dependencies(s.ptr).find(|n| !n.1.is_up()) {
-                            log::debug!(key = %k, addr = %s.addr, dep = %m.1.data(), "waiting for dependency");
+                            log::debug!(key = %k, dep = %m.1.data(), "waiting for dependency");
+                            continue
+                        }
+                        if dep.node(s.ptr).map(|n| n.is_starting()).unwrap_or(false) {
+                            log::debug!(key = %k, "node is already restarting");
+                            continue
+                        }
+                        dependencies.extend(dep.dependencies(s.ptr).filter_map(|(r, n)| n.is_up().then(|| r)));
+                        let mut triggered = false;
+                        for r in dependencies.drain(..) {
+                            if let Some(n) = dep.node_mut(r) {
+                                if let Some(f) = n.replacement(None) {
+                                    let k = n.key().unwrap();
+                                    log::debug!(key = %k, addr = %n.data(), "replacing node dependency");
+                                    triggered = true;
+                                    self.replacements.spawn(async move { (k, f.await) });
+                                }
+                            }
+                        }
+                        if triggered {
                             continue
                         }
                         if let Some(n) = dep.node_mut(s.ptr) {
                             if n.is_up() {
                                 n.down();
                                 if let Some(f) = n.replacement(None) {
-                                    self.replacements.spawn(f);
+                                    n.starting();
+                                    log::debug!(key = %k, addr = %n.data(), "replacing node");
+                                    self.replacements.spawn(async move { (k, f.await) });
                                 }
                             }
                         }
@@ -86,7 +116,7 @@ impl Medic {
                 }
             }
 
-            time::timeout(self.delay, self.get_results(&mut rx)).await;
+            let _ = timeout(self.delay, self.get_results(&mut rx)).await;
         }
     }
 
@@ -94,18 +124,42 @@ impl Medic {
         loop {
             tokio::select! {
                 p = self.pings.join_next(), if !self.pings.is_empty() => match p {
-                    Some(Err(e)) => log::error!("task failed: {e:?}"),
-                    Some(Ok(Err(e))) => log::debug!("failed to send ping: {e}"),
-                    Some(Ok(Ok(()))) => log::debug!("sent ping"),
-                    None => log::debug!("no pings to send")
+                    None                  => log::debug!("no pings to send"),
+                    Some(Err(e))          => log::error!("task failed: {e:?}"),
+                    Some(Ok(Err((k, e)))) => log::debug!(key = %k, err = %e, "failed to send ping"),
+                    Some(Ok(Ok(k)))       => log::debug!(key = %k, "sent ping"),
                 },
                 r = self.replacements.join_next(), if !self.replacements.is_empty() => match r {
-                    Some(Err(e)) => log::error!("task failed: {e:?}"),
-                    Some(Ok(a)) => log::debug!("received replacement: {a}"),
-                    None => log::debug!("no replacements")
+                    None             => log::debug!("no replacements"),
+                    Some(Err(e))     => log::error!("task failed: {e:?}"),
+                    Some(Ok((k, Err(e)))) => log::debug!(key = %k, err = %e, "failed creating a replacement"),
+                    Some(Ok((k, Ok(a)))) => {
+                        let mut sessions = self.sessions.0.lock().unwrap();
+                        let (ses, dep) = sessions.split_borrow();
+                        if let Some(s) = ses.get_mut(&k) {
+                            if let Some(n) = dep.node_mut(s.ptr) {
+                                log::debug!(key = %k, addr = %a, "replacement is up");
+                                n.up(a.clone());
+                                s.pings.clear()
+                            }
+                            for (r, n) in dep.dependents(s.ptr) {
+                                if let Some((&k, _)) = ses.iter_mut().find(|e| e.1.ptr == r) {
+                                    if let Some(f) = n.replacement(Some(a.clone())) {
+                                        log::debug!(key = %k, addr = %n.data(), "replacing dependent node");
+                                        self.replacements.spawn(async move { (k, f.await) });
+                                    }
+                                }
+                            }
+                        }
+                    }
                 },
-                p = rx.recv() => {
-                    log::debug!("received pong");
+                Some(m) = rx.recv() => {
+                    if let Some(s) = self.sessions.0.lock().unwrap().ses.get_mut(&m.key) {
+                        if s.pings.contains(&m.ping) {
+                            log::debug!(key = %m.key, ping = %m.ping, "recv pong");
+                            s.pings.clear()
+                        }
+                    }
                 },
                 else => break
             }
@@ -114,7 +168,6 @@ impl Medic {
 }
 
 async fn forward(sender: SmallSender<NodeMessage>, msg: LocalMessage) -> Result<(), Error> {
-    // First resolve the next hop in the route
     let (reply_tx, mut reply_rx) = small_channel();
     let next = msg.transport().onward_route.next().unwrap(); // TODO: communicate bad routes
     let req = NodeMessage::SenderReq(next.clone(), reply_tx);

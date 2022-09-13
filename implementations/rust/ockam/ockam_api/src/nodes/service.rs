@@ -139,8 +139,7 @@ impl NodeManager {
 impl NodeManager {
     /// Create a new NodeManager with the node name from the ockam CLI
     #[allow(clippy::too_many_arguments)]
-    pub async fn create<A: Into<Address>>(
-        address: A,
+    pub async fn create(
         ctx: &Context,
         node_name: String,
         node_dir: PathBuf,
@@ -560,7 +559,6 @@ pub(crate) mod tests {
             let transport = TcpTransport::create(ctx).await?;
             let node_address = transport.listen("127.0.0.1:0").await?;
             let mut node_man = NodeManager::create(
-                node_manager,
                 ctx,
                 "node".to_string(),
                 node_dir.into_path(),

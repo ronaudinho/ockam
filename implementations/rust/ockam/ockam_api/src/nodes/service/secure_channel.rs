@@ -15,6 +15,10 @@ use ockam_core::api::{Request, Response, ResponseBuilder};
 use ockam_core::{route, AsyncTryClone};
 use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
+use core::time::Duration;
+use ockam_node::tokio::time::timeout;
+
+const MAX_CONNECT: Duration = Duration::from_secs(10);
 
 impl NodeManager {
     async fn get_credential_if_needed(&self) -> Result<()> {
@@ -80,7 +84,7 @@ impl NodeManager {
         trace!(%sc_route, %sc_addr, "Created secure channel");
 
         let info = SecureChannelInfo::new(
-            sc_route,
+            sc_route.clone(),
             sc_addr.clone(),
             authorized_identifiers,
             credential_exchange_mode
@@ -89,7 +93,50 @@ impl NodeManager {
         self.registry.secure_channels.insert(info.clone());
 
         if monitor {
-            self.sessions.add(info)?;
+            let i = std::sync::Arc::new(self.identity()?.async_try_clone().await?);
+            let s = std::sync::Arc::new(self.authenticated_storage.async_try_clone().await?);
+            let r = sc_route.clone();
+            let k = self.sessions.add(&info)?;
+            self.sessions.set_replacement(k, move |a| {
+                let i = i.clone();
+                let s = s.clone();
+                let r = if let Some(a) = &a {
+                    r.clone().modify().pop_front().prepend(a.clone()).into()
+                } else {
+                    r.clone()
+                };
+                Box::pin(async move {
+                    debug! {
+                        target: "ockam_api::session",
+                        addr = ?a,
+                        route = %r,
+                        "creating replacement secure channel"
+                    }
+                    let t = TrustEveryonePolicy; // FIXME
+                    match timeout(MAX_CONNECT, i.create_secure_channel(r.clone(), t, &*s)).await {
+                        Err(_) => {
+                            warn! {
+                                target: "ockam_api::session",
+                                addr = ?a,
+                                route = %r,
+                                "timeout creating new secure channel"
+                            }
+                            Err(ApiError::generic("timeout"))
+                        }
+                        Ok(Err(e)) => {
+                            warn! {
+                                target: "ockam_api::session",
+                                addr = ?a,
+                                route = %r,
+                                err = %e,
+                                "error creating new secure channel"
+                            }
+                            Err(e)
+                        }
+                        Ok(Ok(a)) => Ok(a)
+                    }
+                })
+            })
         }
 
         match credential_exchange_mode {
