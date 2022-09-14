@@ -2,13 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use minicbor::Decoder;
 
 use ockam::{Address, Context, ForwardingService, Result, Routed, TcpTransport, Worker};
 use ockam_core::api::{Method, Request, Response, Status};
-use ockam_core::compat::{boxed::Box, string::String};
+use ockam_core::compat::{boxed::Box, string::String, sync::{Arc, Mutex}};
 use ockam_core::errcode::{Kind, Origin};
 use ockam_core::AsyncTryClone;
 use ockam_identity::{Identity, IdentityIdentifier, PublicIdentity};
@@ -26,7 +25,7 @@ use crate::nodes::config::NodeManConfig;
 use crate::nodes::models::base::NodeStatus;
 use crate::nodes::models::transport::{TransportMode, TransportType};
 use crate::DefaultAddress;
-use crate::session::{self, Medic, SessionMap};
+use crate::session::{self, Medic, Sessions};
 
 pub mod message;
 
@@ -101,7 +100,7 @@ pub struct NodeManager {
     authorities: Option<Authorities>,
     pub(crate) authenticated_storage: LmdbStorage,
     pub(crate) registry: Registry,
-    sessions: SessionMap,
+    sessions: Arc<Mutex<Sessions>>,
     medic: JoinHandle<Result<(), ockam_core::Error>>
 }
 

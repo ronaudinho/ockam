@@ -12,11 +12,13 @@ use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
 use ockam::{Address, Result, Route};
 use ockam_core::api::{Request, Response, ResponseBuilder};
+use ockam_core::compat::sync::Arc;
 use ockam_core::{route, AsyncTryClone};
 use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
 use core::time::Duration;
 use ockam_node::tokio::time::timeout;
+use crate::session::Session;
 
 const MAX_CONNECT: Duration = Duration::from_secs(10);
 
@@ -93,11 +95,20 @@ impl NodeManager {
         self.registry.secure_channels.insert(info.clone());
 
         if monitor {
-            let i = std::sync::Arc::new(self.identity()?.async_try_clone().await?);
-            let s = std::sync::Arc::new(self.authenticated_storage.async_try_clone().await?);
+            let i = Arc::new(self.identity()?.async_try_clone().await?);
+            let s = Arc::new(self.authenticated_storage.async_try_clone().await?);
             let r = sc_route.clone();
-            let k = self.sessions.add(&info)?;
-            self.sessions.set_replacement(k, move |a| {
+            // find dependency of this secure channel:
+            let d = if let Some(x) = r.iter().filter(|a| a.is_local()).next() {
+                self.sessions.lock()
+                    .unwrap()
+                    .iter()
+                    .find_map(|s| (s.address() == x).then(|| s.key()))
+            } else {
+                None
+            };
+            let mut session = Session::new(sc_addr.clone());
+            session.set_replacement(move |a| {
                 let i = i.clone();
                 let s = s.clone();
                 let r = if let Some(a) = &a {
@@ -136,7 +147,11 @@ impl NodeManager {
                         Ok(Ok(a)) => Ok(a)
                     }
                 })
-            })
+            });
+            let k = self.sessions.lock().unwrap().add(session);
+            if let Some(d) = d {
+                self.sessions.lock().unwrap().add_dependency(k, d);
+            }
         }
 
         match credential_exchange_mode {

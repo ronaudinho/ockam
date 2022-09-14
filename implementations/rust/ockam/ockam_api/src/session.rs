@@ -1,26 +1,28 @@
 mod deps;
-mod map;
 
 use minicbor::{Encode, Decode};
 use ockam::{Worker, TransportMessage, LocalMessage};
-use ockam_core::{LOCAL, Address, Error, Routed, Encodable, Decodable};
+use ockam_core::{LOCAL, Address, Error, Routed, Encodable, Decodable, route};
+use ockam_core::compat::sync::{Arc, Mutex};
 use ockam_node::{Context, NodeMessage, RelayMessage};
 use ockam_node::channel_types::{SmallSender, small_channel};
 use ockam_node::tokio;
 use ockam_node::tokio::task::JoinSet;
 use ockam_node::tokio::time::{timeout, Duration};
 use ockam_node::tokio::sync::mpsc;
+use self::deps::{Key, Ping, Status};
 use tracing as log;
-use deps::{Dependencies, Ref, Replacement};
-use map::{MAX_FAILURES, Key, Ping};
 
-pub use map::SessionMap;
+pub use self::deps::{Sessions, Session};
+
+const MAX_FAILURES: usize = 3;
+const DELAY: Duration = Duration::from_secs(7);
 
 #[derive(Debug)]
 pub struct Medic {
     delay: Duration,
-    sessions: SessionMap,
-    pings: JoinSet<Result<Key, (Key, Error)>>,
+    sessions: Arc<Mutex<Sessions>>,
+    pings: JoinSet<(Key, Result<(), Error>)>,
     replacements: JoinSet<(Key, Result<Address, Error>)>
 }
 
@@ -33,14 +35,14 @@ pub struct Message {
 impl Medic {
     pub fn new() -> Self {
         Self {
-            delay: Duration::from_secs(7),
-            sessions: SessionMap::new(),
+            delay: DELAY,
+            sessions: Arc::new(Mutex::new(Sessions::new())),
             pings: JoinSet::new(),
             replacements: JoinSet::new()
         }
     }
 
-    pub fn sessions(&self) -> SessionMap {
+    pub fn sessions(&self) -> Arc<Mutex<Sessions>> {
         self.sessions.clone()
     }
 
@@ -52,65 +54,58 @@ impl Medic {
     }
 
     async fn go(mut self, ctx: Context, mut rx: mpsc::Receiver<Message>) -> ! {
-        let mut dependencies = Vec::new();
         loop {
             log::debug!("check sessions");
             {
-                let mut sessions = self.sessions.0.lock().unwrap();
-                let (ses, dep) = sessions.split_borrow();
-                for (&k, s) in ses {
-                    if dep.dependents(s.ptr).count() > 0 {
-                        log::debug!(key = %k, "skip node with dependent nodes");
+                let mut sessions = self.sessions.lock().unwrap();
+                let (keys, graph) = sessions.parts_mut();
+                for key in keys.iter() {
+                    if graph.dependents(key).next().is_some() {
                         continue
                     }
-                    if s.pings.len() < MAX_FAILURES {
-                        let m = Message::new(k);
-                        s.pings.push(m.ping);
-                        log::debug!(key = %k, ping = %m.ping, "send ping");
+
+                    let session = graph.session_mut(key).expect("valid key");
+
+                    if session.pings().len() < MAX_FAILURES {
+                        let m = Message::new(session.key());
+                        session.add_ping(m.ping);
+                        log::debug!(%key, ping = %m.ping, "send ping");
                         let l = {
                             let v = Encodable::encode(&m).expect("message can be encoded");
-                            let t = TransportMessage::v1(s.route.clone(), Collector::address(), v);
+                            let r = route![session.address().clone(), Responder::NAME];
+                            let t = TransportMessage::v1(r, Collector::address(), v);
                             LocalMessage::new(t, Vec::new())
                         };
                         let sender = ctx.sender().clone();
-                        self.pings.spawn(async move {
-                            forward(sender, l).await.map_err(|e| (k, e))?;
-                            Ok(k)
-                        });
-                    } else {
-                        log::warn!(key = %k, "session unresponsive");
-                        if let Some(m) = dep.dependencies(s.ptr).find(|n| !n.1.is_up()) {
-                            log::debug!(key = %k, dep = %m.1.data(), "waiting for dependency");
-                            continue
-                        }
-                        if dep.node(s.ptr).map(|n| n.is_starting()).unwrap_or(false) {
-                            log::debug!(key = %k, "node is already restarting");
-                            continue
-                        }
-                        dependencies.extend(dep.dependencies(s.ptr).filter_map(|(r, n)| n.is_up().then(|| r)));
-                        let mut triggered = false;
-                        for r in dependencies.drain(..) {
-                            if let Some(n) = dep.node_mut(r) {
-                                if let Some(f) = n.replacement(None) {
-                                    let k = n.key().unwrap();
-                                    log::debug!(key = %k, addr = %n.data(), "replacing node dependency");
-                                    triggered = true;
-                                    self.replacements.spawn(async move { (k, f.await) });
-                                }
+                        self.pings.spawn(async move { (key, forward(sender, l).await) });
+                        continue
+                    }
+
+                    for dep in graph.dependencies(key).filter(|s| s.status() == Status::Down) {
+                        log::debug!(%key, dep = %dep.key(), "waiting for dependency");
+                        continue
+                    }
+
+                    let session = graph.session_mut(key).expect("valid key");
+
+                    match session.status() {
+                        Status::Up => {
+                            log::debug!(%key, "session unresponsive");
+                            let f = session.replacement(None);
+                            session.set_status(Status::Down);
+                            if let Some(k) = graph.dependencies(key).map(Session::key).last() {
+                                let d = graph.session_mut(k).expect("valid key");
+                                let f = d.replacement(None);
+                                d.set_status(Status::Down);
+                                log::debug!(%key, dep = %d.key(), "replacing session dependency root");
+                                self.replacements.spawn(async move { (k, f.await) });
+                            } else {
+                                log::debug!(%key, "replacing session");
+                                self.replacements.spawn(async move { (key, f.await) });
                             }
                         }
-                        if triggered {
-                            continue
-                        }
-                        if let Some(n) = dep.node_mut(s.ptr) {
-                            if n.is_up() {
-                                n.down();
-                                if let Some(f) = n.replacement(None) {
-                                    n.starting();
-                                    log::debug!(key = %k, addr = %n.data(), "replacing node");
-                                    self.replacements.spawn(async move { (k, f.await) });
-                                }
-                            }
+                        Status::Down => {
+                            log::debug!(%key, "session is down");
                         }
                     }
                 }
@@ -126,38 +121,52 @@ impl Medic {
                 p = self.pings.join_next(), if !self.pings.is_empty() => match p {
                     None                  => log::debug!("no pings to send"),
                     Some(Err(e))          => log::error!("task failed: {e:?}"),
-                    Some(Ok(Err((k, e)))) => log::debug!(key = %k, err = %e, "failed to send ping"),
-                    Some(Ok(Ok(k)))       => log::debug!(key = %k, "sent ping"),
+                    Some(Ok((k, Err(e)))) => log::debug!(key = %k, err = %e, "failed to send ping"),
+                    Some(Ok((k, Ok(())))) => log::debug!(key = %k, "sent ping"),
                 },
                 r = self.replacements.join_next(), if !self.replacements.is_empty() => match r {
-                    None             => log::debug!("no replacements"),
-                    Some(Err(e))     => log::error!("task failed: {e:?}"),
-                    Some(Ok((k, Err(e)))) => log::debug!(key = %k, err = %e, "failed creating a replacement"),
-                    Some(Ok((k, Ok(a)))) => {
-                        let mut sessions = self.sessions.0.lock().unwrap();
-                        let (ses, dep) = sessions.split_borrow();
-                        if let Some(s) = ses.get_mut(&k) {
-                            if let Some(n) = dep.node_mut(s.ptr) {
-                                log::debug!(key = %k, addr = %a, "replacement is up");
-                                n.up(a.clone());
-                                s.pings.clear()
+                    None                  => log::debug!("no replacements"),
+                    Some(Err(e))          => log::error!("task failed: {e:?}"),
+                    Some(Ok((k, Err(e)))) => {
+                        let mut sessions = self.sessions.lock().unwrap();
+                        if let Some(s) = sessions.session_mut(k) {
+                            log::debug!(key = %k, err = %e, "replacing session failed");
+                            let f = s.replacement(None);
+                            if let Some(key) = sessions.dependencies(k).map(Session::key).last() {
+                                let d = sessions.session_mut(key).expect("valid key");
+                                let f = d.replacement(None);
+                                d.set_status(Status::Down);
+                                log::debug!(%key, dep = %d.key(), "replacing session dependency root (again)");
+                                self.replacements.spawn(async move { (key, f.await) });
+                            } else {
+                                log::debug!(key = %k, "replacing session");
+                                self.replacements.spawn(async move { (k, f.await) });
                             }
-                            for (r, n) in dep.dependents(s.ptr) {
-                                if let Some((&k, _)) = ses.iter_mut().find(|e| e.1.ptr == r) {
-                                    if let Some(f) = n.replacement(Some(a.clone())) {
-                                        log::debug!(key = %k, addr = %n.data(), "replacing dependent node");
-                                        self.replacements.spawn(async move { (k, f.await) });
-                                    }
-                                }
+                        }
+                    }
+                    Some(Ok((k, Ok(a)))) => {
+                        let mut sessions = self.sessions.lock().unwrap();
+                        if let Some(s) = sessions.session_mut(k) {
+                            log::debug!(key = %k, addr = %a, "replacement is up");
+                            s.set_status(Status::Up);
+                            s.set_address(a.clone());
+                            s.clear_pings();
+                            let n: Vec<Key> = sessions.dependent_neighbours(k).map(Session::key).collect();
+                            for j in n {
+                                let d = sessions.session_mut(j).expect("valid key");
+                                let f = d.replacement(Some(a.clone()));
+                                d.set_status(Status::Down);
+                                log::debug!(key = %k, dep = %d.key(), "replacing dependent session");
+                                self.replacements.spawn(async move { (j, f.await) });
                             }
                         }
                     }
                 },
                 Some(m) = rx.recv() => {
-                    if let Some(s) = self.sessions.0.lock().unwrap().ses.get_mut(&m.key) {
-                        if s.pings.contains(&m.ping) {
+                    if let Some(s) = self.sessions.lock().unwrap().session_mut(m.key) {
+                        if s.pings().contains(&m.ping) {
                             log::debug!(key = %m.key, ping = %m.ping, "recv pong");
-                            s.pings.clear()
+                            s.clear_pings()
                         }
                     }
                 },
