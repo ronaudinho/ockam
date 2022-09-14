@@ -176,6 +176,7 @@ impl Medic {
     }
 }
 
+// FIXME: Temporary hack
 async fn forward(sender: SmallSender<NodeMessage>, msg: LocalMessage) -> Result<(), Error> {
     let (reply_tx, mut reply_rx) = small_channel();
     let next = msg.transport().onward_route.next().unwrap(); // TODO: communicate bad routes

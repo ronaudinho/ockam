@@ -10,7 +10,7 @@ use crate::DefaultAddress;
 use crate::nodes::registry::SecureChannelInfo;
 use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
-use ockam::{Address, Result, Route};
+use ockam::{Address, Result, Route, TCP};
 use ockam_core::api::{Request, Response, ResponseBuilder};
 use ockam_core::compat::sync::Arc;
 use ockam_core::{route, AsyncTryClone};
@@ -98,15 +98,11 @@ impl NodeManager {
             let i = Arc::new(self.identity()?.async_try_clone().await?);
             let s = Arc::new(self.authenticated_storage.async_try_clone().await?);
             let r = sc_route.clone();
-            // find dependency of this secure channel:
-            let d = if let Some(x) = r.iter().filter(|a| a.is_local()).next() {
-                self.sessions.lock()
-                    .unwrap()
-                    .iter()
-                    .find_map(|s| (s.address() == x).then(|| s.key()))
-            } else {
-                None
-            };
+            debug! {
+                target: "ockam_api::session",
+                addr = %sc_addr,
+                route = %sc_route
+            }
             let mut session = Session::new(sc_addr.clone());
             session.set_replacement(move |a| {
                 let i = i.clone();
@@ -148,9 +144,35 @@ impl NodeManager {
                     }
                 })
             });
+
             let k = self.sessions.lock().unwrap().add(session);
-            if let Some(d) = d {
-                self.sessions.lock().unwrap().add_dependency(k, d);
+
+            if let Some(a) = sc_route.iter().next().cloned() {
+                let j = self.sessions.lock().unwrap().find(&a).map(Session::key);
+                let j = if let Some(j) = j {
+                    self.sessions.lock().unwrap().add_dependency(k, j);
+                    j
+                } else {
+                    let s = Session::new(a.clone());
+                    let j = self.sessions.lock().unwrap().add(s);
+                    self.sessions.lock().unwrap().add_dependency(k, j);
+                    j
+                };
+                if a.transport_type() == TCP {
+                    let t = Arc::new(self.tcp_transport.async_try_clone().await?);
+                    let mut sessions = self.sessions.lock().unwrap();
+                    let s = sessions.session_mut(j).unwrap();
+                    s.set_replacement(move |_| {
+                        let t = t.clone();
+                        let a = a.clone();
+                        Box::pin(async move {
+                            debug!(target: "ockam_api::session", addr = %a, "reconnecting");
+                            t.disconnect(a.address()).await?;
+                            t.connect(a.address()).await?;
+                            Ok(a)
+                        })
+                    });
+                }
             }
         }
 

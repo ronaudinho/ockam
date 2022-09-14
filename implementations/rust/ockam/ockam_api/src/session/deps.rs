@@ -194,6 +194,10 @@ impl Graph {
         self.0.node_weight_mut(k.idx())
     }
 
+    pub fn find(&self, a: &Address) -> Option<&Session> {
+        self.iter().find(|s| s.address() == a)
+    }
+
     pub fn add_dependency(&mut self, from: Key, to: Key) -> bool {
         if !self.0.contains_node(from.idx()) || !self.0.contains_node(to.idx()) {
             return false
