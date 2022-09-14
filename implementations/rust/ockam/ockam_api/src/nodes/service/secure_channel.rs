@@ -18,7 +18,7 @@ use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
 use core::time::Duration;
 use ockam_node::tokio::time::timeout;
-use crate::session::Session;
+use crate::session::{Mode, Session};
 
 const MAX_CONNECT: Duration = Duration::from_secs(10);
 
@@ -103,7 +103,7 @@ impl NodeManager {
                 addr = %sc_addr,
                 route = %sc_route
             }
-            let mut session = Session::new(sc_addr.clone());
+            let mut session = Session::new(sc_addr.clone(), Mode::Active);
             session.set_replacement(move |a| {
                 let i = i.clone();
                 let s = s.clone();
@@ -153,7 +153,7 @@ impl NodeManager {
                     self.sessions.lock().unwrap().add_dependency(k, j);
                     j
                 } else {
-                    let s = Session::new(a.clone());
+                    let s = Session::new(a.clone(), Mode::Active);
                     let j = self.sessions.lock().unwrap().add(s);
                     self.sessions.lock().unwrap().add_dependency(k, j);
                     j
@@ -167,7 +167,7 @@ impl NodeManager {
                         let a = a.clone();
                         Box::pin(async move {
                             debug!(target: "ockam_api::session", addr = %a, "reconnecting");
-                            t.disconnect(a.address()).await?;
+                            let _ = t.disconnect(a.address()).await;
                             t.connect(a.address()).await?;
                             Ok(a)
                         })

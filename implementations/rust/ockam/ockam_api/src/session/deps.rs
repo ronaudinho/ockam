@@ -18,6 +18,7 @@ pub struct Session {
     key: Key,
     address: Address,
     status: Status,
+    mode: Mode,
     replace: Box<dyn Fn(Option<Address>) -> Replacement + Send>,
     pings: Vec<Ping>
 }
@@ -28,17 +29,19 @@ impl fmt::Debug for Session {
             .field("key", &self.key)
             .field("address", &self.address)
             .field("status", &self.status)
+            .field("mode", &self.mode)
             .field("pings", &self.pings)
             .finish()
     }
 }
 
 impl Session {
-    pub fn new(addr: Address) -> Self {
+    pub fn new(addr: Address, mode: Mode) -> Self {
         Self {
             key: Key::default(),
             address: addr.clone(),
             status: Status::Up,
+            mode,
             replace: Box::new(move |_| {
                 let addr = addr.clone();
                 Box::pin(async move { Ok(addr) })
@@ -57,6 +60,10 @@ impl Session {
 
     pub fn set_address(&mut self, a: Address) {
         self.address = a
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
     pub fn status(&self) -> Status {
@@ -93,6 +100,9 @@ impl Session {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status { Down, Up }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode { Active, Passive }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Encode, Decode)]
 pub struct Key {
@@ -160,6 +170,7 @@ impl Sessions {
             target: "ockam_api::session",
             key = %k,
             addr = %s.address(),
+            mode = ?s.mode(),
             "session added"
         }
         s.key = k;

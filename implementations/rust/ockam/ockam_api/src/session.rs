@@ -13,7 +13,7 @@ use ockam_node::tokio::sync::mpsc;
 use self::deps::{Key, Ping, Status};
 use tracing as log;
 
-pub use self::deps::{Sessions, Session};
+pub use self::deps::{Mode, Sessions, Session};
 
 const MAX_FAILURES: usize = 3;
 const DELAY: Duration = Duration::from_secs(7);
@@ -60,11 +60,17 @@ impl Medic {
                 let mut sessions = self.sessions.lock().unwrap();
                 let (keys, graph) = sessions.parts_mut();
                 for key in keys.iter() {
-                    if graph.dependents(key).next().is_some() {
+                    if let Some(Mode::Active) = graph.dependents(key).next().map(Session::mode) {
+                        log::debug!(%key, "skipping session with active dependent sessions");
                         continue
                     }
 
                     let session = graph.session_mut(key).expect("valid key");
+
+                    if session.mode() == Mode::Passive {
+                        log::debug!(%key, "skipping passive session");
+                        continue
+                    }
 
                     if session.pings().len() < MAX_FAILURES {
                         let m = Message::new(session.key());
