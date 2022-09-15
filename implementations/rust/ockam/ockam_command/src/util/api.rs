@@ -1,10 +1,13 @@
 //! API shim to make it nicer to interact with the ockam messaging API
 
-use crate::util::DEFAULT_ORCHESTRATOR_ADDRESS;
+use std::str::FromStr;
+
+use anyhow::Context;
+use clap::Args;
 // TODO: maybe we can remove this cross-dependency inside the CLI?
 use minicbor::Decoder;
+use tracing::trace;
 
-use clap::Args;
 use ockam::identity::IdentityIdentifier;
 use ockam::Result;
 use ockam_api::cloud::{BareCloudRequestWrapper, CloudRequestWrapper};
@@ -14,6 +17,8 @@ use ockam_core::api::RequestBuilder;
 use ockam_core::api::{Request, Response};
 use ockam_core::Address;
 use ockam_multiaddr::MultiAddr;
+
+use crate::util::DEFAULT_CONTROLLER_ADDRESS;
 
 ////////////// !== generators
 
@@ -219,11 +224,9 @@ pub(crate) fn start_authenticated_service(addr: &str) -> Result<Vec<u8>> {
 }
 
 pub(crate) mod credentials {
+    use ockam_api::nodes::models::credentials::{GetCredentialRequest, PresentCredentialRequest};
+
     use super::*;
-    use hex::FromHexError;
-    use ockam_api::nodes::models::credentials::{
-        GetCredentialRequest, PresentCredentialRequest, SetAuthorityRequest,
-    };
 
     pub(crate) fn present_credential(
         to: &MultiAddr,
@@ -233,28 +236,17 @@ pub(crate) mod credentials {
         Request::post("/node/credentials/actions/present").body(b)
     }
 
-    pub(crate) fn set_authority(authorities: &[String]) -> RequestBuilder<SetAuthorityRequest> {
-        let authorities: std::result::Result<Vec<Vec<u8>>, FromHexError> =
-            authorities.iter().map(hex::decode).collect();
-        let authorities = authorities.unwrap();
-
-        let b = SetAuthorityRequest::new(authorities);
-        Request::post("/node/credentials/authority").body(b)
-    }
-
-    pub(crate) fn get_credential(
-        from: &MultiAddr,
-        overwrite: bool,
-    ) -> RequestBuilder<GetCredentialRequest> {
-        let b = GetCredentialRequest::new(from, overwrite);
+    pub(crate) fn get_credential<'r>(overwrite: bool) -> RequestBuilder<'r, GetCredentialRequest> {
+        let b = GetCredentialRequest::new(overwrite);
         Request::post("/node/credentials/actions/get").body(b)
     }
 }
 
 /// Helpers to create enroll API requests
 pub(crate) mod enroll {
-    use crate::enroll::*;
     use ockam_api::cloud::enroll::auth0::{Auth0Token, AuthenticateAuth0Token};
+
+    use crate::enroll::*;
 
     use super::*;
 
@@ -264,20 +256,21 @@ pub(crate) mod enroll {
     ) -> RequestBuilder<CloudRequestWrapper<AuthenticateAuth0Token>> {
         let token = AuthenticateAuth0Token::new(token);
         Request::post("v0/enroll/auth0")
-            .body(CloudRequestWrapper::new(token, cmd.cloud_opts.route()))
+            .body(CloudRequestWrapper::new(token, &cmd.cloud_opts.route()))
     }
 }
 
 /// Helpers to create spaces API requests
 pub(crate) mod space {
-    use crate::space::*;
     use ockam_api::cloud::space::*;
+
+    use crate::space::*;
 
     use super::*;
 
     pub(crate) fn create(cmd: &CreateCommand) -> RequestBuilder<CloudRequestWrapper<CreateSpace>> {
         let b = CreateSpace::new(cmd.name.as_str(), &cmd.admins);
-        Request::post("v0/spaces").body(CloudRequestWrapper::new(b, cmd.cloud_opts.route()))
+        Request::post("v0/spaces").body(CloudRequestWrapper::new(b, &cmd.cloud_opts.route()))
     }
 
     pub(crate) fn list(cloud_route: &MultiAddr) -> RequestBuilder<BareCloudRequestWrapper> {
@@ -301,8 +294,9 @@ pub(crate) mod space {
 
 /// Helpers to create projects API requests
 pub(crate) mod project {
-    use crate::project::*;
     use ockam_api::cloud::project::*;
+
+    use crate::project::*;
 
     use super::*;
 
@@ -344,14 +338,14 @@ pub(crate) mod project {
             cmd.description.as_deref(),
         );
         Request::post(format!("v0/project-enrollers/{}", cmd.project_id))
-            .body(CloudRequestWrapper::new(b, cmd.cloud_opts.route()))
+            .body(CloudRequestWrapper::new(b, &cmd.cloud_opts.route()))
     }
 
     pub(crate) fn list_enrollers(
         cmd: &ListEnrollersCommand,
     ) -> RequestBuilder<BareCloudRequestWrapper> {
         Request::get(format!("v0/project-enrollers/{}", cmd.project_id))
-            .body(CloudRequestWrapper::bare(cmd.cloud_opts.route()))
+            .body(CloudRequestWrapper::bare(&cmd.cloud_opts.route()))
     }
 
     pub(crate) fn delete_enroller(
@@ -361,7 +355,7 @@ pub(crate) mod project {
             "v0/project-enrollers/{}/{}",
             cmd.project_id, cmd.enroller_identity_id
         ))
-        .body(CloudRequestWrapper::bare(cmd.cloud_opts.route()))
+        .body(CloudRequestWrapper::bare(&cmd.cloud_opts.route()))
     }
 }
 
@@ -446,15 +440,21 @@ pub(crate) fn parse_create_secure_channel_listener_response(resp: &[u8]) -> Resu
 
 ////////////// !== share CLI args
 
+pub(crate) const OCKAM_CONTROLLER_ADDR: &str = "OCKAM_CONTROLLER_ADDR";
+
 #[derive(Clone, Debug, Args)]
-pub struct CloudOpts {
-    /// Ockam orchestrator address
-    #[clap(global = true, hide = true, default_value = DEFAULT_ORCHESTRATOR_ADDRESS)]
-    pub route_to_controller: MultiAddr,
-}
+pub struct CloudOpts;
 
 impl CloudOpts {
-    pub fn route(&self) -> &MultiAddr {
-        &self.route_to_controller
+    pub fn route(&self) -> MultiAddr {
+        let route = if let Ok(s) = std::env::var(OCKAM_CONTROLLER_ADDR) {
+            s
+        } else {
+            DEFAULT_CONTROLLER_ADDRESS.to_string()
+        };
+        trace!(%route, "Controller route");
+        MultiAddr::from_str(&route)
+            .context(format!("invalid Controller route: {route}"))
+            .unwrap()
     }
 }

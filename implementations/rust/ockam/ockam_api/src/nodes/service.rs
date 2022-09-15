@@ -82,7 +82,7 @@ impl AsRef<[AuthorityInfo]> for Authorities {
 
 pub(crate) struct AuthorityInfo {
     identity: PublicIdentity,
-    addr: Option<MultiAddr>, // TODO: Should be not optional in the future
+    addr: MultiAddr,
 }
 
 /// Node manager provides a messaging API to interact with the current node
@@ -97,6 +97,7 @@ pub struct NodeManager {
     skip_defaults: bool,
     vault: Option<Vault>,
     identity: Option<Identity<Vault>>,
+    project_id: Option<Vec<u8>>,
     authorities: Option<Authorities>,
     pub(crate) authenticated_storage: LmdbStorage,
     pub(crate) registry: Registry,
@@ -133,6 +134,13 @@ impl NodeManager {
             .as_ref()
             .ok_or_else(|| ApiError::generic("Authorities don't exist"))
     }
+
+    /// Available only for member nodes
+    pub(crate) fn project_id(&self) -> Result<&Vec<u8>> {
+        self.project_id
+            .as_ref()
+            .ok_or_else(|| ApiError::generic("Project id is not set"))
+    }
 }
 
 impl NodeManager {
@@ -146,6 +154,7 @@ impl NodeManager {
         identity_override: Option<IdentityOverride>,
         skip_defaults: bool,
         ac: Option<&AuthoritiesConfig>,
+        project_id: Option<Vec<u8>>,
         api_transport: (TransportType, TransportMode, String),
         tcp_transport: TcpTransport,
     ) -> Result<Self> {
@@ -225,6 +234,7 @@ impl NodeManager {
             skip_defaults,
             vault,
             identity,
+            project_id,
             authorities: None,
             authenticated_storage,
             registry: Default::default(),
@@ -256,7 +266,7 @@ impl NodeManager {
         for a in ac.authorities() {
             v.push(AuthorityInfo {
                 identity: PublicIdentity::import(a.1.identity(), vault).await?,
-                addr: Some(a.1.access_route().clone()),
+                addr: a.1.access_route().clone(),
             })
         }
 
@@ -288,19 +298,9 @@ impl NodeManager {
 
         ForwardingService::create(ctx).await?;
 
-        let authorized_identifiers = if self.config.readlock_inner().identity_was_overridden {
-            self.identity.as_ref().map(|i| {
-                // If we had overridden Identity - we should trust only this identity,
-                // otherwise - trust all
-                vec![i.identifier().clone()]
-            })
-        } else {
-            None
-        };
-
         self.create_secure_channel_listener_impl(
             DefaultAddress::SECURE_CHANNEL_LISTENER.into(),
-            authorized_identifiers,
+            None, // Not checking identifiers here in favor of credentials check
         )
         .await?;
 
@@ -387,9 +387,6 @@ impl NodeManager {
             }
 
             // ==*== Credentials ==*==
-            (Post, ["node", "credentials", "authority"]) => {
-                self.set_authorities(req, dec).await?.to_vec()?
-            }
             (Post, ["node", "credentials", "actions", "get"]) => {
                 self.get_credential(req, dec).await?.to_vec()?
             }
@@ -490,6 +487,18 @@ impl NodeManager {
                 self.authenticate_enrollment_token(ctx, dec).await?
             }
 
+            // ==*== Subscriptions ==*==
+            (Post, ["subscription"]) => self.activate_subscription(ctx, dec).await?,
+            (Get, ["subscription", id]) => self.get_subscription(ctx, dec, id).await?,
+            (Get, ["subscription"]) => self.list_subscriptions(ctx, dec).await?,
+            (Put, ["subscription", id, "contact_info"]) => {
+                self.update_subscription_contact_info(ctx, dec, id).await?
+            }
+            (Put, ["subscription", id, "space_id"]) => {
+                self.update_subscription_space(ctx, dec, id).await?
+            }
+            (Put, ["subscription", id, "unsubscribe"]) => self.unsubscribe(ctx, dec, id).await?,
+
             // ==*== Messages ==*==
             (Post, ["v0", "message"]) => self.send_message(ctx, req, dec).await?,
 
@@ -563,6 +572,7 @@ pub(crate) mod tests {
                 node_dir.into_path(),
                 None,
                 true,
+                None,
                 None,
                 (
                     TransportType::Tcp,

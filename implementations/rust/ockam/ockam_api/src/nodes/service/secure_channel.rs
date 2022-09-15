@@ -7,15 +7,15 @@ use crate::nodes::models::secure_channel::{
 };
 use crate::nodes::NodeManager;
 use crate::DefaultAddress;
-use crate::nodes::registry::SecureChannelInfo;
 use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
 use ockam::{Address, Result, Route, TCP};
 use ockam_core::api::{Request, Response, ResponseBuilder};
 use ockam_core::compat::sync::Arc;
 use ockam_core::{route, AsyncTryClone};
-use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
+use ockam_identity::{Identity, IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
+use ockam_vault::Vault;
 use core::time::Duration;
 use ockam_node::tokio::time::timeout;
 use crate::session::{Mode, Session};
@@ -23,45 +23,37 @@ use crate::session::{Mode, Session};
 const MAX_CONNECT: Duration = Duration::from_secs(10);
 
 impl NodeManager {
-    async fn get_credential_if_needed(&self) -> Result<()> {
+    async fn get_credential_if_needed(&mut self) -> Result<()> {
         let identity = self.identity()?;
 
         if identity.credential().await.is_some() {
+            debug!("Credential check: credential already exists...");
             return Ok(());
         }
 
-        let authorities = self.authorities()?;
-
-        // Take first known authority address
-        let addr = authorities
-            .as_ref()
-            .iter()
-            .find_map(|x| x.addr.as_ref())
-            .ok_or_else(|| ApiError::generic("No known Authority address"))?;
-
-        self.get_credential_impl(identity, false, addr).await?;
+        debug!("Credential check: requesting...");
+        self.get_credential_impl(false).await?;
+        debug!("Credential check: got new credential...");
 
         Ok(())
     }
 
-    pub(super) async fn create_secure_channel_impl(
+    pub(crate) async fn create_secure_channel_internal(
         &mut self,
+        identity: &Identity<Vault>,
         sc_route: Route,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-        credential_exchange_mode: CredentialExchangeMode,
         monitor: bool
     ) -> Result<Address> {
-        let identity = self.identity()?.async_try_clone().await?;
-
         // If channel was already created, do nothing.
         if let Some(channel) = self.registry.secure_channels.get_by_route(&sc_route) {
             let addr = channel.addr();
-            trace!(%addr, "Using cached secure channel");
+            debug!(%addr, "Using cached secure channel");
             return Ok(addr.clone());
         }
-
         // Else, create it.
-        trace!(%sc_route, "Creating secure channel");
+
+        debug!(%sc_route, "Creating secure channel");
         let sc_addr = match authorized_identifiers.clone() {
             Some(ids) => {
                 identity
@@ -83,16 +75,12 @@ impl NodeManager {
             }
         }?;
 
-        trace!(%sc_route, %sc_addr, "Created secure channel");
+        debug!(%sc_route, %sc_addr, "Created secure channel");
 
-        let info = SecureChannelInfo::new(
-            sc_route.clone(),
-            sc_addr.clone(),
-            authorized_identifiers,
-            credential_exchange_mode
-        );
 
-        self.registry.secure_channels.insert(info.clone());
+        self.registry
+            .secure_channels
+            .insert(sc_addr.clone(), sc_route.clone(), authorized_identifiers);
 
         if monitor {
             let i = Arc::new(self.identity()?.async_try_clone().await?);
@@ -176,20 +164,36 @@ impl NodeManager {
             }
         }
 
+        Ok(sc_addr)
+    }
+
+    pub(super) async fn create_secure_channel_impl(
+        &mut self,
+        sc_route: Route,
+        authorized_identifiers: Option<Vec<IdentityIdentifier>>,
+        credential_exchange_mode: CredentialExchangeMode,
+        monitor: bool
+    ) -> Result<Address> {
+        let identity = self.identity()?.async_try_clone().await?;
+
+        let sc_addr = self
+            .create_secure_channel_internal(&identity, sc_route, authorized_identifiers, monitor)
+            .await?;
+
         match credential_exchange_mode {
             CredentialExchangeMode::None => {
-                trace!(%sc_addr, "No credential presentation");
+                debug!(%sc_addr, "No credential presentation");
             }
             CredentialExchangeMode::Oneway => {
-                trace!(%sc_addr, "One-way credential presentation");
+                debug!(%sc_addr, "One-way credential presentation");
                 self.get_credential_if_needed().await?;
                 identity
                     .present_credential(route![sc_addr.clone(), DefaultAddress::CREDENTIAL_SERVICE])
                     .await?;
-                trace!(%sc_addr, "One-way credential presentation success");
+                debug!(%sc_addr, "One-way credential presentation success");
             }
             CredentialExchangeMode::Mutual => {
-                trace!(%sc_addr, "Mutual credential presentation");
+                debug!(%sc_addr, "Mutual credential presentation");
                 self.get_credential_if_needed().await?;
                 let authorities = self.authorities()?;
                 identity
@@ -199,7 +203,7 @@ impl NodeManager {
                         &self.authenticated_storage,
                     )
                     .await?;
-                trace!(%sc_addr, "Mutual credential presentation success");
+                debug!(%sc_addr, "Mutual credential presentation success");
             }
         }
 

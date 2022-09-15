@@ -28,7 +28,11 @@ pub struct InfoCommand {
 pub struct ProjectInfo<'a> {
     #[serde(borrow)]
     pub id: CowStr<'a>,
+    #[serde(borrow)]
+    pub name: CowStr<'a>,
     pub identity: Option<IdentityIdentifier>,
+    #[serde(borrow)]
+    pub access_route: CowStr<'a>,
     #[serde(borrow)]
     pub authority_access_route: Option<CowStr<'a>>,
     #[serde(borrow)]
@@ -39,9 +43,25 @@ impl<'a> From<Project<'a>> for ProjectInfo<'a> {
     fn from(p: Project<'a>) -> Self {
         Self {
             id: p.id,
+            name: p.name,
             identity: p.identity,
+            access_route: p.access_route,
             authority_access_route: p.authority_access_route,
             authority_identity: p.authority_identity,
+        }
+    }
+}
+
+impl<'a> From<&ProjectInfo<'a>> for Project<'a> {
+    fn from(p: &ProjectInfo<'a>) -> Self {
+        Project {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            identity: p.identity.clone(),
+            access_route: p.access_route.clone(),
+            authority_access_route: p.authority_access_route.clone(),
+            authority_identity: p.authority_identity.clone(),
+            ..Default::default()
         }
     }
 }
@@ -61,14 +81,14 @@ async fn run_impl(
     opts: CommandGlobalOpts,
     cmd: InfoCommand,
 ) -> crate::Result<()> {
-    let controller_route = cmd.cloud_opts.route();
+    let controller_route = &cmd.cloud_opts.route();
     let node_name = start_embedded_node(ctx, &opts.config).await?;
 
     // Lookup project
     let id = match config::get_project(&opts.config, &cmd.name) {
         Some(id) => id,
         None => {
-            config::refresh_projects(ctx, &opts, &node_name, cmd.cloud_opts.route(), None).await?;
+            config::refresh_projects(ctx, &opts, &node_name, &cmd.cloud_opts.route(), None).await?;
             config::get_project(&opts.config, &cmd.name)
                 .context(format!("Project '{}' does not exist", cmd.name))?
         }
