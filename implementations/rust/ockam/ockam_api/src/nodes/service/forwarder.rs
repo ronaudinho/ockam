@@ -1,19 +1,24 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use minicbor::Decoder;
 
+use ockam::compat::futures::FutureExt;
 use ockam::remote::RemoteForwarder;
-use ockam::{Result, Route, TCP};
+use ockam::{Result, Route};
 use ockam_core::AsyncTryClone;
 use ockam_core::api::{Request, Response, Status};
 use ockam_multiaddr::MultiAddr;
 use ockam_node::Context;
+use ockam_node::tokio::time::timeout;
 
 use crate::error::ApiError;
 use crate::nodes::models::forwarder::{CreateForwarder, ForwarderInfo};
 use crate::nodes::service::map_multiaddr_err;
 use crate::nodes::NodeManager;
 use crate::session::{Session, Mode};
+
+const MAX_CONNECT: Duration = Duration::from_secs(10);
 
 impl NodeManager {
     pub(super) async fn create_forwarder(
@@ -61,16 +66,28 @@ impl NodeManager {
                         if let Some(a) = a {
                             let r: Route = r.modify().pop_front().prepend(a).into();
                             let f = if at_rust_node {
-                                RemoteForwarder::create_static_without_heartbeats(&c, r, n).await?
+                                RemoteForwarder::create_static_without_heartbeats(&c, r, n).boxed()
                             } else {
-                                RemoteForwarder::create_static(&c, r, n).await?
+                                RemoteForwarder::create_static(&c, r, n).boxed()
                             };
-                            debug! {
-                                target: "ockam_api::session",
-                                addr = %f.worker_address(),
-                                "started new forwarder"
+                            match timeout(MAX_CONNECT, f).await {
+                                Err(_) => {
+                                    warn! {
+                                        target: "ockam_api::session",
+                                        "timeout creating new remote forwarder"
+                                    }
+                                    Err(ApiError::generic("timeout"))
+                                }
+                                Ok(Err(e)) => {
+                                    warn! {
+                                        target: "ockam_api::session",
+                                        err = %e,
+                                        "error creating new remote forwarder"
+                                    }
+                                    Err(e)
+                                }
+                                Ok(Ok(a)) => Ok(a.worker_address().clone())
                             }
-                            Ok(f.worker_address().clone())
                         } else {
                             Ok(w)
                         }
@@ -79,29 +96,12 @@ impl NodeManager {
                 let k = self.sessions.lock().unwrap().add(session);
                 if let Some(a) = route.iter().next().cloned() {
                     let j = self.sessions.lock().unwrap().find(&a).map(Session::key);
-                    let j = if let Some(j) = j {
+                    if let Some(j) = j {
                         self.sessions.lock().unwrap().add_dependency(k, j);
-                        j
                     } else {
                         let s = Session::new(a.clone(), Mode::Active);
                         let j = self.sessions.lock().unwrap().add(s);
                         self.sessions.lock().unwrap().add_dependency(k, j);
-                        j
-                    };
-                    if a.transport_type() == TCP {
-                        let t = Arc::new(self.tcp_transport.async_try_clone().await?);
-                        let mut sessions = self.sessions.lock().unwrap();
-                        let s = sessions.session_mut(j).unwrap();
-                        s.set_replacement(move |_| {
-                            let t = t.clone();
-                            let a = a.clone();
-                            Box::pin(async move {
-                                debug!(target: "ockam_api::session", addr = %a, "reconnecting");
-                                let _ = t.disconnect(a.address()).await;
-                                t.connect(a.address()).await?;
-                                Ok(a)
-                            })
-                        });
                     }
                 }
                 let b = ForwarderInfo::from(info);

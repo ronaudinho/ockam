@@ -9,7 +9,7 @@ use crate::nodes::NodeManager;
 use crate::DefaultAddress;
 use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
-use ockam::{Address, Result, Route, TCP};
+use ockam::{Address, Result, Route};
 use ockam_core::api::{Request, Response, ResponseBuilder};
 use ockam_core::compat::sync::Arc;
 use ockam_core::{route, AsyncTryClone};
@@ -137,29 +137,12 @@ impl NodeManager {
 
             if let Some(a) = sc_route.iter().next().cloned() {
                 let j = self.sessions.lock().unwrap().find(&a).map(Session::key);
-                let j = if let Some(j) = j {
+                if let Some(j) = j {
                     self.sessions.lock().unwrap().add_dependency(k, j);
-                    j
                 } else {
                     let s = Session::new(a.clone(), Mode::Active);
                     let j = self.sessions.lock().unwrap().add(s);
                     self.sessions.lock().unwrap().add_dependency(k, j);
-                    j
-                };
-                if a.transport_type() == TCP {
-                    let t = Arc::new(self.tcp_transport.async_try_clone().await?);
-                    let mut sessions = self.sessions.lock().unwrap();
-                    let s = sessions.session_mut(j).unwrap();
-                    s.set_replacement(move |_| {
-                        let t = t.clone();
-                        let a = a.clone();
-                        Box::pin(async move {
-                            debug!(target: "ockam_api::session", addr = %a, "reconnecting");
-                            let _ = t.disconnect(a.address()).await;
-                            t.connect(a.address()).await?;
-                            Ok(a)
-                        })
-                    });
                 }
             }
         }
