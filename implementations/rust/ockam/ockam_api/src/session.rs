@@ -142,7 +142,7 @@ impl Medic {
                                 let d = sessions.session_mut(key).expect("valid key");
                                 let f = d.replacement(None);
                                 d.set_status(Status::Down);
-                                log::debug!(%key, dep = %d.key(), "replacing session dependency root (again)");
+                                log::debug!(key = %k, dep = %key, "replacing session dependency root (again)");
                                 self.replacements.spawn(async move { (key, f.await) });
                             } else {
                                 log::debug!(key = %k, "replacing session");

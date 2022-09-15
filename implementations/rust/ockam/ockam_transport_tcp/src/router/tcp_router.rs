@@ -108,8 +108,6 @@ impl TcpRouter {
         // Resolve peer address
         let (peer_addr, hostnames) = TcpRouterHandle::resolve_peer(peer)?;
 
-        debug!(addr = %peer_addr, "Connecting to remote address");
-
         // Start a new `WorkerPair` for the given peer containing a
         // `TcpSendWorker` and `TcpRecvprocessor`
         let router_handle = self.create_self_handle().await?;
