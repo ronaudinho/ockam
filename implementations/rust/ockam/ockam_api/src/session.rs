@@ -60,7 +60,7 @@ impl Medic {
                 let mut sessions = self.sessions.lock().unwrap();
                 let (keys, graph) = sessions.parts_mut();
                 for key in keys.iter() {
-                    if let Some(Mode::Active) = graph.dependents(key).next().map(Session::mode) {
+                    if graph.dependent_neighbours(key).find(|s| s.mode() == Mode::Active).is_some() {
                         log::debug!(%key, "skipping session with active dependent sessions");
                         continue
                     }

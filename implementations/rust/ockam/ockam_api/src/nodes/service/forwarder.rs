@@ -65,6 +65,11 @@ impl NodeManager {
                     Box::pin(async move {
                         if let Some(a) = a {
                             let r: Route = r.modify().pop_front().prepend(a).into();
+                            debug! {
+                                target: "ockam_api::session",
+                                route = %r,
+                                "creating new remote forwarder"
+                            }
                             let f = if at_rust_node {
                                 RemoteForwarder::create_static_without_heartbeats(&c, r, n).boxed()
                             } else {
