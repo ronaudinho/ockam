@@ -4,8 +4,7 @@ use minicbor::{Encode, Decode};
 use ockam::{Worker, TransportMessage, LocalMessage};
 use ockam_core::{LOCAL, Address, Error, Routed, Encodable, Decodable, route};
 use ockam_core::compat::sync::{Arc, Mutex};
-use ockam_node::{Context, NodeMessage, RelayMessage};
-use ockam_node::channel_types::{SmallSender, small_channel};
+use ockam_node::Context;
 use ockam_node::tokio;
 use ockam_node::tokio::task::JoinSet;
 use ockam_node::tokio::time::{timeout, Duration};
@@ -54,6 +53,7 @@ impl Medic {
     }
 
     async fn go(mut self, ctx: Context, mut rx: mpsc::Receiver<Message>) -> ! {
+        let ctx = Arc::new(ctx);
         loop {
             log::debug!("check sessions");
             {
@@ -82,8 +82,8 @@ impl Medic {
                             let t = TransportMessage::v1(r, Collector::address(), v);
                             LocalMessage::new(t, Vec::new())
                         };
-                        let sender = ctx.sender().clone();
-                        self.pings.spawn(async move { (key, forward(sender, l).await) });
+                        let sender = ctx.clone();
+                        self.pings.spawn(async move { (key, sender.forward(l).await) });
                         continue
                     }
 
@@ -180,29 +180,6 @@ impl Medic {
             }
         }
     }
-}
-
-// FIXME: Temporary hack
-async fn forward(sender: SmallSender<NodeMessage>, msg: LocalMessage) -> Result<(), Error> {
-    let (reply_tx, mut reply_rx) = small_channel();
-    let next = msg.transport().onward_route.next().unwrap(); // TODO: communicate bad routes
-    let req = NodeMessage::SenderReq(next.clone(), reply_tx);
-    sender
-        .send(req)
-        .await
-        .unwrap(); // TODO
-    let (addr, sender, needs_wrapping) = reply_rx
-        .recv()
-        .await
-        .unwrap() // TODO
-        .unwrap() // TODO
-        .take_sender()?;
-
-    let onward = msg.transport().onward_route.clone();
-    let msg = RelayMessage::new(addr, msg, onward, needs_wrapping);
-    sender.send(msg).await.unwrap(); // TODO
-
-    Ok(())
 }
 
 impl Message {

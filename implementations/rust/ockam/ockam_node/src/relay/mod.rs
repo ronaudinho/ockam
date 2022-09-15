@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 use ockam_core::{Address, LocalMessage, Route};
 
 mod processor_relay;

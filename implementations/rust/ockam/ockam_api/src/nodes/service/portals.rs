@@ -71,8 +71,8 @@ impl NodeManager {
 
         info!("Handling request to create inlet portal");
 
-        let outlet_addr = MultiAddr::from_str(&outlet_route).map_err(map_multiaddr_err)?;
-        let outlet_route = match multiaddr_to_route(&outlet_addr) {
+        let outlet_route = MultiAddr::from_str(&outlet_route).map_err(map_multiaddr_err)?;
+        let outlet_route = match multiaddr_to_route(&outlet_route) {
             Some(route) => route,
             None => {
                 return Ok(Response::bad_request(req.id())
@@ -92,10 +92,6 @@ impl NodeManager {
                     alias.clone(),
                     InletInfo::new(&bind_addr, Some(&worker_addr)),
                 );
-
-                // for a in outlet_route.iter().filter(|a| a.is_local()) {
-                //     self.sessions.add_dependency(a, worker_addr.clone()).await
-                // }
 
                 Response::ok(req.id()).body(InletStatus::new(
                     bind_addr,

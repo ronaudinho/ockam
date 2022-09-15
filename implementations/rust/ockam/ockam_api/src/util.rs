@@ -51,12 +51,6 @@ pub fn clean_multiaddr(
     Some((new_ma, lookup_meta))
 }
 
-pub fn try_multiaddr_to_route(ma: &MultiAddr) -> Result<Route, ockam_core::Error> {
-    multiaddr_to_route(ma).ok_or_else(|| {
-        crate::error::ApiError::generic("could not map multiaddr to route")
-    })
-}
-
 /// Try to convert a multi-address to an Ockam route.
 pub fn multiaddr_to_route(ma: &MultiAddr) -> Option<Route> {
     let mut rb = Route::new();

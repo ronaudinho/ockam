@@ -3,8 +3,6 @@ use ockam_core::compat::collections::BTreeMap;
 use ockam_core::{Address, Route};
 use ockam_identity::IdentityIdentifier;
 
-use super::models::secure_channel::CredentialExchangeMode;
-
 #[derive(Default)]
 pub(crate) struct SecureChannelRegistry {
     channels: Vec<SecureChannelInfo>,
@@ -19,16 +17,18 @@ impl SecureChannelRegistry {
         self.channels.iter().find(|&x| x.addr() == addr)
     }
 
-    pub fn insert(&mut self, info: SecureChannelInfo) {
-        self.channels.push(info)
+    pub fn insert(
+        &mut self,
+        addr: Address,
+        route: Route,
+        authorized_identifiers: Option<Vec<IdentityIdentifier>>,
+    ) {
+        self.channels
+            .push(SecureChannelInfo::new(route, addr, authorized_identifiers))
     }
 
-    pub fn remove_by_addr(&mut self, addr: &Address) -> Option<SecureChannelInfo> {
-        if let Some(i) = self.channels.iter().position(|ch| ch.addr() == addr) {
-            let info = self.channels.remove(i);
-            return Some(info)
-        }
-        None
+    pub fn remove_by_addr(&mut self, addr: &Address) {
+        self.channels.retain(|x| x.addr() != addr)
     }
 
     pub fn list(&self) -> &[SecureChannelInfo] {
@@ -36,14 +36,13 @@ impl SecureChannelRegistry {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SecureChannelInfo {
     // Target route of the channel
     route: Route,
     // Local address of the created channel
     addr: Address,
     authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-    mode: CredentialExchangeMode
 }
 
 impl SecureChannelInfo {
@@ -51,13 +50,11 @@ impl SecureChannelInfo {
         route: Route,
         addr: Address,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-        mode: CredentialExchangeMode
     ) -> Self {
         Self {
             addr,
             route,
             authorized_identifiers,
-            mode
         }
     }
 
@@ -71,10 +68,6 @@ impl SecureChannelInfo {
 
     pub fn authorized_identifiers(&self) -> Option<&Vec<IdentityIdentifier>> {
         self.authorized_identifiers.as_ref()
-    }
-    
-    pub fn mode(&self) -> CredentialExchangeMode {
-        self.mode
     }
 }
 

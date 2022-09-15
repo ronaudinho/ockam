@@ -67,7 +67,6 @@ pub use local_info::*;
 pub use messages::*;
 pub use worker_builder::WorkerBuilder;
 
-pub use relay::RelayMessage;
 pub use node::{NodeBuilder, NullWorker};
 
 #[cfg(feature = "std")]
