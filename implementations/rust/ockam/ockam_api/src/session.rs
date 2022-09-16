@@ -9,6 +9,8 @@ use ockam_node::tokio;
 use ockam_node::tokio::task::JoinSet;
 use ockam_node::tokio::time::{timeout, Duration};
 use ockam_node::tokio::sync::mpsc;
+use crate::DefaultAddress;
+
 use self::deps::{Key, Ping, Status};
 use tracing as log;
 
@@ -78,7 +80,7 @@ impl Medic {
                         log::debug!(%key, ping = %m.ping, "send ping");
                         let l = {
                             let v = Encodable::encode(&m).expect("message can be encoded");
-                            let r = route![session.address().clone(), Responder::NAME];
+                            let r = route![session.address().clone(), DefaultAddress::ECHO_SERVICE];
                             let t = TransportMessage::v1(r, Collector::address(), v);
                             LocalMessage::new(t, Vec::new())
                         };
@@ -226,33 +228,3 @@ impl Worker for Collector {
         Ok(())
     }
 }
-
-/// A responder returns received PING messages.
-#[derive(Debug)]
-pub struct Responder(());
-
-impl Responder {
-    const NAME: &'static str = "ockam.ping.responder";
-
-    pub fn new() -> Self {
-        Responder(())
-    }
-
-    pub fn address() -> Address {
-        Address::new(LOCAL, Self::NAME)
-    }
-}
-
-#[ockam::worker]
-impl Worker for Responder {
-    type Message = Message;
-    type Context = Context;
-
-    async fn handle_message(&mut self, ctx: &mut Context, msg: Routed<Self::Message>) -> Result<(), Error> {
-        let r = msg.return_route();
-        let m = msg.body();
-        log::debug!(key = %m.key, ping = %m.ping, "send pong");
-        ctx.send(r, m).await
-    }
-}
-

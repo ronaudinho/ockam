@@ -25,7 +25,7 @@ use crate::nodes::config::NodeManConfig;
 use crate::nodes::models::base::NodeStatus;
 use crate::nodes::models::transport::{TransportMode, TransportType};
 use crate::DefaultAddress;
-use crate::session::{self, Medic, Sessions};
+use crate::session::{Medic, Sessions};
 
 pub mod message;
 
@@ -253,7 +253,7 @@ impl NodeManager {
             }
         }
 
-        ctx.start_worker(session::Responder::address(), session::Responder::new()).await?;
+        s.start_echoer_service_impl(ctx, DefaultAddress::ECHO_SERVICE.into()).await?;
 
         Ok(s)
     }
@@ -292,8 +292,6 @@ impl NodeManager {
         self.start_authenticated_service_impl(ctx, DefaultAddress::AUTHENTICATED_SERVICE.into())
             .await?;
         self.start_uppercase_service_impl(ctx, DefaultAddress::UPPERCASE_SERVICE.into())
-            .await?;
-        self.start_echoer_service_impl(ctx, DefaultAddress::ECHO_SERVICE.into())
             .await?;
 
         ForwardingService::create(ctx).await?;
