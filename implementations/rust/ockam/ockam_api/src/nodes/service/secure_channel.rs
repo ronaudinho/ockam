@@ -11,16 +11,10 @@ use minicbor::Decoder;
 use ockam::identity::TrustEveryonePolicy;
 use ockam::{Address, Result, Route};
 use ockam_core::api::{Request, Response, ResponseBuilder};
-use ockam_core::compat::sync::Arc;
 use ockam_core::{route, AsyncTryClone};
 use ockam_identity::{Identity, IdentityIdentifier, TrustMultiIdentifiersPolicy};
 use ockam_multiaddr::MultiAddr;
 use ockam_vault::Vault;
-use core::time::Duration;
-use ockam_node::tokio::time::timeout;
-use crate::session::{Mode, Session};
-
-const MAX_CONNECT: Duration = Duration::from_secs(10);
 
 impl NodeManager {
     async fn get_credential_if_needed(&mut self) -> Result<()> {
@@ -43,7 +37,6 @@ impl NodeManager {
         identity: &Identity<Vault>,
         sc_route: Route,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
-        monitor: bool
     ) -> Result<Address> {
         // If channel was already created, do nothing.
         if let Some(channel) = self.registry.secure_channels.get_by_route(&sc_route) {
@@ -77,75 +70,9 @@ impl NodeManager {
 
         debug!(%sc_route, %sc_addr, "Created secure channel");
 
-
         self.registry
             .secure_channels
-            .insert(sc_addr.clone(), sc_route.clone(), authorized_identifiers);
-
-        if monitor {
-            let i = Arc::new(self.identity()?.async_try_clone().await?);
-            let s = Arc::new(self.authenticated_storage.async_try_clone().await?);
-            let r = sc_route.clone();
-            debug! {
-                target: "ockam_api::session",
-                addr = %sc_addr,
-                route = %sc_route
-            }
-            let mut session = Session::new(sc_addr.clone(), Mode::Active);
-            session.set_replacement(move |a| {
-                let i = i.clone();
-                let s = s.clone();
-                let r = if let Some(a) = &a {
-                    r.clone().modify().pop_front().prepend(a.clone()).into()
-                } else {
-                    r.clone()
-                };
-                Box::pin(async move {
-                    debug! {
-                        target: "ockam_api::session",
-                        addr = ?a,
-                        route = %r,
-                        "creating replacement secure channel"
-                    }
-                    let t = TrustEveryonePolicy; // FIXME
-                    match timeout(MAX_CONNECT, i.create_secure_channel(r.clone(), t, &*s)).await {
-                        Err(_) => {
-                            warn! {
-                                target: "ockam_api::session",
-                                addr = ?a,
-                                route = %r,
-                                "timeout creating new secure channel"
-                            }
-                            Err(ApiError::generic("timeout"))
-                        }
-                        Ok(Err(e)) => {
-                            warn! {
-                                target: "ockam_api::session",
-                                addr = ?a,
-                                route = %r,
-                                err = %e,
-                                "error creating new secure channel"
-                            }
-                            Err(e)
-                        }
-                        Ok(Ok(a)) => Ok(a)
-                    }
-                })
-            });
-
-            let k = self.sessions.lock().unwrap().add(session);
-
-            if let Some(a) = sc_route.iter().next().cloned() {
-                let j = self.sessions.lock().unwrap().find(&a).map(Session::key);
-                if let Some(j) = j {
-                    self.sessions.lock().unwrap().add_dependency(k, j);
-                } else {
-                    let s = Session::new(a.clone(), Mode::Active);
-                    let j = self.sessions.lock().unwrap().add(s);
-                    self.sessions.lock().unwrap().add_dependency(k, j);
-                }
-            }
-        }
+            .insert(sc_addr.clone(), sc_route, authorized_identifiers);
 
         Ok(sc_addr)
     }
@@ -155,12 +82,11 @@ impl NodeManager {
         sc_route: Route,
         authorized_identifiers: Option<Vec<IdentityIdentifier>>,
         credential_exchange_mode: CredentialExchangeMode,
-        monitor: bool
     ) -> Result<Address> {
         let identity = self.identity()?.async_try_clone().await?;
 
         let sc_addr = self
-            .create_secure_channel_internal(&identity, sc_route, authorized_identifiers, monitor)
+            .create_secure_channel_internal(&identity, sc_route, authorized_identifiers)
             .await?;
 
         match credential_exchange_mode {
@@ -203,7 +129,6 @@ impl NodeManager {
             addr,
             authorized_identifiers,
             credential_exchange_mode,
-            monitor,
             ..
         } = dec.decode()?;
 
@@ -227,7 +152,7 @@ impl NodeManager {
             .ok_or_else(|| ApiError::generic("Invalid Multiaddr"))?;
 
         let channel = self
-            .create_secure_channel_impl(route, authorized_identifiers, credential_exchange_mode, monitor.unwrap_or(false))
+            .create_secure_channel_impl(route, authorized_identifiers, credential_exchange_mode)
             .await?;
 
         let response = Response::ok(req.id()).body(CreateSecureChannelResponse::new(&channel));

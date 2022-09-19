@@ -1,15 +1,20 @@
-use anyhow::Context as _;
+use std::collections::HashMap;
+
+use anyhow::{anyhow, Context as _};
 use clap::Args;
+use ockam_api::config::lookup::InternetAddress;
+use ockam_multiaddr::proto::{DnsAddr, Ip4, Ip6, Tcp, Project};
 use rand::prelude::random;
 
 use ockam::{Context, TcpTransport};
 use ockam_api::nodes::models::forwarder::{CreateForwarder, ForwarderInfo};
 use ockam_api::nodes::models::secure_channel::CredentialExchangeMode;
-use ockam_api::{clean_multiaddr, is_local_node};
-use ockam_core::api::{Request, RequestBuilder};
-use ockam_multiaddr::MultiAddr;
+use ockam_api::is_local_node;
+use ockam_core::api::Request;
+use ockam_multiaddr::{MultiAddr, Protocol, proto::Node};
 
 use crate::forwarder::HELP_DETAIL;
+use crate::project::util;
 use crate::util::api::CloudOpts;
 use crate::util::output::Output;
 use crate::util::{get_final_element, node_rpc, RpcBuilder};
@@ -25,7 +30,7 @@ use crate::{help, CommandGlobalOpts};
 pub struct CreateCommand {
     /// Name of the forwarder (optional)
     #[clap(hide_default_value = true, default_value_t = hex::encode(&random::<[u8;4]>()))]
-    pub forwarder_name: String,
+    forwarder_name: String,
 
     /// Node for which to create the forwarder
     #[clap(long, name = "NODE", display_order = 900)]
@@ -37,7 +42,7 @@ pub struct CreateCommand {
 
     /// Run credentials exchange
     #[clap(long, short, display_order = 802)]
-    pub exchange_credentials: bool,
+    exchange_credentials: bool,
 
     /// Orchestrator address to resolve projects present in the `at` argument
     #[clap(flatten)]
@@ -50,54 +55,70 @@ impl CreateCommand {
     }
 }
 
-async fn rpc(mut ctx: Context, (opts, cmd): (CommandGlobalOpts, CreateCommand)) -> Result<()> {
-    async fn go(ctx: &mut Context, opts: &CommandGlobalOpts, cmd: CreateCommand) -> Result<()> {
-        let tcp = TcpTransport::create(ctx).await?;
-        let api_node = get_final_element(&cmd.to);
-        let at_rust_node = is_local_node(&cmd.at).context("Argument --at is not valid")?;
-        let (at, meta) = clean_multiaddr(&cmd.at, &opts.config.lookup()).unwrap();
+async fn rpc(ctx: Context, (opts, cmd): (CommandGlobalOpts, CreateCommand)) -> Result<()> {
+    let tcp = TcpTransport::create(&ctx).await?;
+    let api_node = get_final_element(&cmd.to);
+    let at_rust_node = is_local_node(&cmd.at).context("Argument --at is not valid")?;
 
-        let credentials_exchange_mode = if cmd.exchange_credentials {
-            CredentialExchangeMode::Oneway
-        } else {
-            CredentialExchangeMode::None
-        };
-
-        let projects_sc = crate::project::util::get_projects_secure_channels_from_config_lookup(
-            ctx,
-            opts,
-            &meta,
-            &cmd.cloud_opts.route(),
-            api_node,
-            Some(&tcp),
-            credentials_exchange_mode,
-        )
-        .await?;
-        let at = crate::project::util::clean_projects_multiaddr(at, projects_sc)?;
-        let mut rpc = RpcBuilder::new(ctx, opts, api_node).tcp(&tcp)?.build();
-        let cmd = CreateCommand { at, ..cmd };
-        rpc.request(req(&cmd, at_rust_node)?).await?;
-        rpc.parse_and_print_response::<ForwarderInfo>()?;
-        Ok(())
-    }
-    go(&mut ctx, &opts, cmd).await
-}
-
-/// Construct a request to create a forwarder
-fn req(cmd: &CreateCommand, at_rust_node: bool) -> anyhow::Result<RequestBuilder<CreateForwarder>> {
-    let alias = if at_rust_node {
-        let mut name = "forward_to_".to_owned();
-        name.push_str(&cmd.forwarder_name);
-        name
+    let credentials_exchange_mode = if cmd.exchange_credentials {
+        CredentialExchangeMode::Oneway
     } else {
-        cmd.forwarder_name.clone()
+        CredentialExchangeMode::None
     };
 
-    Ok(Request::post("/node/forwarder").body(CreateForwarder::new(
-        &cmd.at,
-        Some(alias),
-        at_rust_node,
-    )))
+    let lookup = opts.config.lookup();
+
+    let mut ma = MultiAddr::default();
+    let mut pa = HashMap::new();
+
+    for proto in cmd.at.iter() {
+        match proto.code() {
+            Node::CODE => {
+                let alias = proto.cast::<Node>()
+                    .ok_or_else(|| anyhow!("invalid node address protocol"))?;
+                let addr = lookup.get_node(&alias)
+                    .ok_or_else(|| anyhow!("unknown node {}", &*alias))?;
+                match addr {
+                    InternetAddress::Dns(dns, _) => ma.push_back(DnsAddr::new(dns))?,
+                    InternetAddress::V4(v4) => ma.push_back(Ip4(*v4.ip()))?,
+                    InternetAddress::V6(v6) => ma.push_back(Ip6(*v6.ip()))?,
+                }
+                ma.push_back(Tcp(addr.port()))?
+            }
+            Project::CODE => {
+                let alias = proto.cast::<Project>()
+                    .ok_or_else(|| anyhow!("invalid project address protocol"))?;
+                if lookup.get_project(&alias).is_none() {
+                    util::config::refresh_projects(&ctx, &opts, api_node, &cmd.cloud_opts.route(), Some(&tcp)).await?
+                }
+                if let Some(p) = lookup.get_project(&alias) {
+                    ma.try_extend(&p.node_route)?;
+                    pa.insert(p.node_route.clone(), p.identity_id.clone());
+                } else {
+                    return Err(anyhow!("unknown project name {}", &*alias).into())
+                }
+            }
+            _ => ma.push_back_value(&proto)?
+        }
+    }
+
+    let req = {
+        let alias = if at_rust_node {
+            format!("forward_to_{}", cmd.forwarder_name)
+        } else {
+            cmd.forwarder_name.clone()
+        };
+        let mut body = CreateForwarder::new(ma, Some(alias), at_rust_node);
+        body.set_identities(pa)
+            .set_credentials_mode(credentials_exchange_mode);
+        Request::post("/node/forwarder").body(body)
+    };
+
+    let mut rpc = RpcBuilder::new(&ctx, &opts, api_node).tcp(&tcp)?.build();
+    rpc.request(req).await?;
+    rpc.parse_and_print_response::<ForwarderInfo>()?;
+
+    Ok(())
 }
 
 impl Output for ForwarderInfo<'_> {

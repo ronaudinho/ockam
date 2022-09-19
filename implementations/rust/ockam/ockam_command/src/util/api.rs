@@ -141,16 +141,12 @@ pub(crate) fn create_secure_channel(
     addr: &MultiAddr,
     authorized_identifiers: Option<Vec<IdentityIdentifier>>,
     credential_exchange_mode: CredentialExchangeMode,
-    monitor: bool
 ) -> RequestBuilder<'static, models::secure_channel::CreateSecureChannelRequest<'static>> {
-    let mut payload = models::secure_channel::CreateSecureChannelRequest::new(
+    let payload = models::secure_channel::CreateSecureChannelRequest::new(
         addr,
         authorized_identifiers,
         credential_exchange_mode,
     );
-    if monitor {
-        payload.monitor = Some(true)
-    }
     Request::post("/node/secure_channel").body(payload)
 }
 

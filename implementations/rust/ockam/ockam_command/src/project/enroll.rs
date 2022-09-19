@@ -95,7 +95,6 @@ impl Runner {
             &addr,
             Some(allowed),
             CredentialExchangeMode::None,
-            false
         ))
         .await?;
         let res = rpc.parse_response::<CreateSecureChannelResponse>()?;

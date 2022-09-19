@@ -443,7 +443,7 @@ impl NodeManager {
                 .to_vec()?,
 
             // ==*== Forwarder commands ==*==
-            (Post, ["node", "forwarder"]) => self.create_forwarder(ctx, req, dec).await?,
+            (Post, ["node", "forwarder"]) => self.create_forwarder(ctx, req.id(), dec).await?,
 
             // ==*== Inlets & Outlets ==*==
             (Get, ["node", "inlet"]) => self.get_inlets(req).to_vec()?,
