@@ -59,6 +59,7 @@ impl Sessions {
         k
     }
 
+    #[allow(unused)]
     pub fn session(&self, k: &Key) -> Option<&Session> {
         self.map.get(k)
     }
@@ -67,10 +68,12 @@ impl Sessions {
         self.map.get_mut(k)
     }
 
+    #[allow(unused)]
     pub fn find(&self, a: &Address) -> Option<&Session> {
         self.iter().find_map(|(_, s)| (s.address() == a).then(|| s))
     }
 
+    #[allow(unused)]
     pub fn iter(&self) -> impl Iterator<Item = (&Key, &Session)> + '_ {
         self.map.iter()
     }
