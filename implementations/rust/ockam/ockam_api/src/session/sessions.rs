@@ -19,7 +19,7 @@ pub struct Session {
     key: Key,
     address: Address,
     status: Status,
-    replace: Box<dyn Fn() -> Replacement + Send>,
+    replace: Box<dyn Fn(Address) -> Replacement + Send>,
     pings: Vec<Ping>
 }
 
@@ -89,8 +89,7 @@ impl Session {
             key: Key::default(),
             address: addr.clone(),
             status: Status::Up,
-            replace: Box::new(move || {
-                let addr = addr.clone();
+            replace: Box::new(move |addr| {
                 Box::pin(async move { Ok(addr) })
             }),
             pings: Vec::new()
@@ -117,13 +116,13 @@ impl Session {
         self.status = s
     }
 
-    pub fn replacement(&self) -> Replacement {
-        (self.replace)()
+    pub fn replacement(&self, addr: Address) -> Replacement {
+        (self.replace)(addr)
     }
 
     pub fn set_replacement<F>(&mut self, f: F)
     where
-        F: Fn() -> Replacement + Send + 'static
+        F: Fn(Address) -> Replacement + Send + 'static
     {
         self.replace = Box::new(f)
     }

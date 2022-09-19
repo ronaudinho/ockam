@@ -78,7 +78,7 @@ impl Medic {
                     match session.status() {
                         Status::Up => {
                             log::debug!(%key, "session unresponsive");
-                            let f = session.replacement();
+                            let f = session.replacement(session.address().clone());
                             session.set_status(Status::Down);
                             log::debug!(%key, "replacing session");
                             self.replacements.spawn(async move { (key, f.await) });
@@ -110,7 +110,7 @@ impl Medic {
                         let mut sessions = self.sessions.lock().unwrap();
                         if let Some(s) = sessions.session_mut(&k) {
                             log::debug!(key = %k, err = %e, "replacing session failed");
-                            let f = s.replacement();
+                            let f = s.replacement(s.address().clone());
                             log::debug!(key = %k, "replacing session");
                             self.replacements.spawn(async move { (k, f.await) });
                         }

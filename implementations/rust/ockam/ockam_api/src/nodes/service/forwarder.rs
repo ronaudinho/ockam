@@ -4,23 +4,20 @@ use std::time::Duration;
 
 use minicbor::Decoder;
 
-use ockam::authenticated_storage::AuthenticatedStorage;
 use ockam::remote::RemoteForwarder;
 use ockam::{Result, Route, Address};
 use ockam_core::AsyncTryClone;
-use ockam_core::api::{Response, Status, Id};
-use ockam_identity::{IdentityIdentifier, TrustMultiIdentifiersPolicy};
+use ockam_core::api::{Error, Response, Status, Id, Request};
+use ockam_identity::IdentityIdentifier;
 use ockam_multiaddr::{MultiAddr, Protocol};
 use ockam_multiaddr::proto::{DnsAddr, Ip4, Ip6, Tcp, Service};
 use ockam_node::Context;
 use ockam_node::tokio::time::timeout;
-use ockam_vault::Vault;
-use ockam_identity::Identity;
 
 use crate::error::ApiError;
 use crate::multiaddr_to_route;
 use crate::nodes::models::forwarder::{CreateForwarder, ForwarderInfo};
-use crate::nodes::models::secure_channel::CredentialExchangeMode;
+use crate::nodes::models::secure_channel::{CredentialExchangeMode, CreateSecureChannelRequest, CreateSecureChannelResponse, DeleteSecureChannelRequest};
 use crate::nodes::service::map_multiaddr_err;
 use crate::nodes::NodeManager;
 use crate::session::Session;
@@ -39,9 +36,14 @@ impl NodeManager {
         let forwarder = match req.alias {
             Some(alias) => {
                 let auth = Arc::new(req.identities);
-                let ident = Arc::new(self.identity()?.async_try_clone().await?);
-                let store = Arc::new(self.authenticated_storage.async_try_clone().await?);
-                let addr = create_sec_chan(&ident, store.clone(), &req.address, &auth, req.mode).await?;
+                let addr = {
+                    let a = map_addr(&req.address)?;
+                    let r = multiaddr_to_route(&a).ok_or_else(|| {
+                        ApiError::generic("invalid multiaddr")
+                    })?;
+                    let v = auth.get(&a).map(|i| vec![i.clone()]);
+                    self.create_secure_channel_impl(r, v, req.mode).await?
+                };
                 let rote = Route::from(addr.clone());
                 let alas = alias.to_string();
                 let fwdr = if req.at_rust_node {
@@ -51,7 +53,7 @@ impl NodeManager {
                     if fwdr.is_ok() {
                         let ctx = Arc::new(ctx.async_try_clone().await?);
                         let ses = Session::new(addr);
-                        self.monitor(ses, ctx, ident, store, req.address, alias.to_string(), auth, req.mode).await?
+                        self.monitor(ses, ctx, req.address, alias.to_string(), auth, req.mode).await?
                     }
                     fwdr
                 };
@@ -84,24 +86,22 @@ impl NodeManager {
         }
     }
 
-    async fn monitor<S: AuthenticatedStorage>(
+    async fn monitor(
         &mut self,
         mut session: Session,
         ctx: Arc<Context>,
-        ident: Arc<Identity<Vault>>,
-        store: Arc<S>,
         addr: MultiAddr,
         alas: String,
         auth: Arc<HashMap<MultiAddr, IdentityIdentifier>>,
         mode: CredentialExchangeMode
     ) -> Result<()> {
-        session.set_replacement(move || {
+        let manager = self.address.clone();
+        session.set_replacement(move |prev| {
             let ctx = ctx.clone();
             let addr = addr.clone();
-            let ident = ident.clone();
-            let store = store.clone();
             let alas = alas.clone();
             let auth = auth.clone();
+            let magr = manager.clone();
             Box::pin(async move {
                 debug! {
                     target: "ockam_api::session",
@@ -109,7 +109,7 @@ impl NodeManager {
                     "creating new remote forwarder"
                 }
                 let f = async {
-                    let a = create_sec_chan(&ident, store.clone(), &addr, &auth, mode).await?;
+                    let a = replace_sec_chan(&ctx, &magr, prev, &addr, &auth, mode).await?;
                     RemoteForwarder::create_static(&ctx, Route::from(a.clone()), alas).await?;
                     Ok(a)
                 };
@@ -138,14 +138,8 @@ impl NodeManager {
     }
 }
 
-async fn create_sec_chan<S: AuthenticatedStorage>(
-    ident: &Identity<Vault>,
-    store: Arc<S>,
-    addr: &MultiAddr,
-    authorised: &HashMap<MultiAddr, IdentityIdentifier>,
-    mode: CredentialExchangeMode
-) -> Result<Address> {
-    let mut protos = addr.iter();
+fn map_addr(input: &MultiAddr) -> Result<MultiAddr> {
+    let mut protos = input.iter();
     if !matches!(protos.next().map(|p| p.code()), Some(DnsAddr::CODE | Ip4::CODE | Ip6::CODE)) {
         return Err(ApiError::generic("invalid forwarder address (expecting ip address or dns name)"))
     }
@@ -158,12 +152,51 @@ async fn create_sec_chan<S: AuthenticatedStorage>(
     if let Some(p) = protos.next() {
         return Err(ApiError::generic("invalid forwarder address (unexpected additional proto)"))
     }
-    let addr = MultiAddr::default().try_with(addr.iter().take(3)).map_err(map_multiaddr_err)?;
-    let policy = authorised.get(&addr)
-        .map(|i| TrustMultiIdentifiersPolicy::new(vec![i.clone()]))
-        .ok_or_else(|| ApiError::generic("no authorisied identifier for address"))?;
-    let route = multiaddr_to_route(&addr).ok_or_else(|| {
-        ApiError::generic("invalid multiaddr")
-    })?;
-    ident.create_secure_channel(route, policy, &*store).await
+    MultiAddr::default().try_with(input.iter().take(3)).map_err(map_multiaddr_err)
+}
+
+async fn replace_sec_chan(
+    ctx: &Context,
+    manager: &Address,
+    prev: Address,
+    addr: &MultiAddr,
+    authorised: &HashMap<MultiAddr, IdentityIdentifier>,
+    mode: CredentialExchangeMode
+) -> Result<Address> {
+    debug! {
+        target: "ockam_api::session",
+        prev = %prev,
+        addr = %addr,
+        "recreating secure channel"
+    }
+    let req = DeleteSecureChannelRequest::new(&prev);
+    let req = Request::delete("/node/secure_channel").body(req).to_vec()?;
+    let vec: Vec<u8> = ctx.send_and_receive(manager.clone(), req).await?;
+    let mut d = Decoder::new(&vec);
+    let res: Response = d.decode()?;
+    if res.status() != Some(Status::Ok) {
+        if res.has_body() {
+            let e: Error = d.decode()?; // TODO
+        }
+    }
+    let ids = authorised.get(addr).map(|i| vec![i.clone()]);
+    let req = CreateSecureChannelRequest::new(addr, ids, mode);
+    let req = Request::post("/node/secure_channel").body(req).to_vec()?;
+    let vec: Vec<u8> = ctx.send_and_receive(manager.clone(), req).await?;
+    let mut d = Decoder::new(&vec);
+    let res: Response = d.decode()?;
+    if res.status() != Some(Status::Ok) {
+        if res.has_body() {
+            let e: Error = d.decode()?; // TODO
+        }
+        return Err(ApiError::generic("error creating secure channel"))
+    }
+    let res: CreateSecureChannelResponse = d.decode()?;
+    let mad = res.addr()?;
+    if let Some(p) = mad.first() {
+        if let Some(p) = p.cast::<Service>() {
+            return Ok(Address::from_string(&*p))
+        }
+    }
+    Err(ApiError::generic("invalid response address"))
 }
