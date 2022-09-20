@@ -1,12 +1,13 @@
 //! Node Manager (Node Man, the superhero that we deserve)
 
 use std::collections::BTreeMap;
+use std::error::Error as _;
 use std::path::PathBuf;
 
 use minicbor::Decoder;
 
 use ockam::{Address, Context, ForwardingService, Result, Routed, TcpTransport, Worker};
-use ockam_core::api::{Method, Request, Response, Status};
+use ockam_core::api::{Error, Method, Request, Response, Status};
 use ockam_core::compat::{boxed::Box, string::String, sync::{Arc, Mutex}};
 use ockam_core::errcode::{Kind, Origin};
 use ockam_core::AsyncTryClone;
@@ -324,7 +325,7 @@ impl NodeManager {
         req: &Request<'_>,
         dec: &mut Decoder<'_>,
     ) -> Result<Vec<u8>> {
-        trace! {
+        debug! {
             target: TARGET,
             id     = %req.id(),
             method = ?req.method(),
@@ -540,16 +541,27 @@ impl Worker for NodeManager {
 
         let r = match self.handle_request(ctx, &req, &mut dec).await {
             Ok(r) => r,
-            // If an error occurs, send a response with the error code so the listener can
-            // fail fast instead of failing silently here and force the listener to timeout.
             Err(err) => {
-                error!(?err, "Failed to handle request");
-                Response::builder(req.id(), Status::InternalServerError)
-                    .body(format!("Failed to handle request: {err}"))
-                    .to_vec()?
+                error! {
+                    target: TARGET,
+                    re     = %req.id(),
+                    method = ?req.method(),
+                    path   = %req.path(),
+                    code   = %err.code(),
+                    cause  = ?err.source(),
+                    "failed to handle request"
+                }
+                let err = Error::new(req.path()).with_message(format!("failed to handle request: {err}"));
+                Response::builder(req.id(), Status::InternalServerError).body(err).to_vec()?
             }
         };
-        trace!("** sending response");
+        debug! {
+            target: TARGET,
+            re     = %req.id(),
+            method = ?req.method(),
+            path   = %req.path(),
+            "responding"
+        }
         ctx.send(msg.return_route(), r).await
     }
 }
