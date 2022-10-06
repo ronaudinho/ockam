@@ -26,8 +26,6 @@ defmodule Ockam.ABAC.AttributeRules do
           | {:and, [rule()]}
           | {:or, [rule()]}
 
-  defguard is_comp(comp) when comp == :eq or comp == :gt or comp == :lt or comp == :member
-
   defguard is_key(key)
            when is_tuple(key) and tuple_size(key) == 2 and
                   (elem(key, 0) == :resource or elem(key, 0) == :action or
@@ -36,103 +34,40 @@ defmodule Ockam.ABAC.AttributeRules do
   ## TODO: support more value types for gt/lt
   defguard is_value(value) when is_binary(value)
 
-  def format(true) do
-    "true"
-  end
-  def format(false) do
-    "false"
-  end
-  def format({comp, key, value}) when is_key(key) and is_value(value) and is_comp(comp) do
-    "(#{to_string(comp)},#{format_key(key)},#{format_value(value)})"
-  end
-  def format({comp, key1, key2}) when is_key(key1) and is_key(key2) and is_comp(comp) do
-    "(#{to_string(comp)},#{format_key(key1)},#{format_key(key2)})"
-  end
-  def format({:member, key, values}) when is_list(values) do
-    values_str = Enum.map(values, fn(value) -> format_value(value) end) |> Enum.join(",")
-    "(member,#{format_key(key)},[#{values_str}])"
-  end
-  def format({:not, rule}) do
-    "(not,#{format(rule)})"
-  end
-  def format({:and, rules}) do
-    rules_str = Enum.map(rules, fn(rule) -> format(rule) end) |> Enum.join(",")
-    "(and,[#{rules_str}])"
-  end
-  def format({:or, rules}) do
-    rules_str = Enum.map(rules, fn(rule) -> format(rule) end) |> Enum.join(",")
-    "(or,[#{rules_str}])"
-  end
-
-  def format_key({type, name} = key) when is_key(key) do
-    ## TODO: escape parenthesis
-    "(#{type}, #{name})"
-  end
-
-  def format_value(value) when is_value(value) do
-    "#{inspect(value)}"
+  def format(rule) do
+    to_s_expr(rule)
+    |> SymbolicExpression.Writer.write()
   end
 
   def parse(string) do
-    parse_rule(string)
+    SymbolicExpression.Parser.parse(string)
+    |> from_s_expr()
   end
 
-  def parse_rule!("true") do
-    true
+  def to_s_expr(simple) when is_boolean(simple) do
+    [simple]
   end
-  def parse_rule!("false") do
-    false
+  def to_s_expr({op, key, val}) when is_key(key) and is_value(val) do
+    [op, to_s_expr(key), val]
   end
-  def parse_rule!("(and,[" <> rules = rule) do
-    parse_combination_rule(:and, rules, rule)
+  def to_s_expr({op, key1, key2}) when is_key(key1) and is_key(key2) do
+    [op, to_s_expr(key1), to_s_expr(key2)]
   end
-  def parse_rule!("(or,[" <> rules = rule) do
-    parse_combination_rule(:or, rules, rule)
+  def to_s_expr({:member, key, list}) when is_key(key) and is_list(list) do
+    [:member, to_s_expr(key), [:list, list]]
   end
-  def parse_rule("(not," <> rule = full_rule) do
-    case String.ends_with?(rule, ")") do
-      true ->
-        {:not parse_rule!(String.replace_suffix(rule, ")", ""))}
-      false ->
-        raise {:invalid_rule, rule, :closing_brackets_missing}
-    end
+  def to_s_expr({:not, rule}) when is_boolean(rule) or is_tuple(rule) do
+    [:not, to_s_expr(rule)]
   end
-  def parse_rule("(eq," <> params = rule) do
-    parse_params_rule(:eq, params, rule)
+  def to_s_expr({op, rules}) when (op == :and or op == :or) and is_list(rules) do
+    [op, [:list, Enum.map(rules, fn(rule) -> to_s_expr(rule) end)]]
   end
-  def parse_rule("(gt," <> params = rule) do
-    parse_params_rule(:eq, params, rule)
-  end
-  def parse_rule("(lt," <> params = rule) do
-    parse_params_rule(:eq, params, rule)
-  end
-  def parse_rule("(member," <> params = rule) do
-    parse_params_rule(:member, params, rule)
+  def to_s_expr({type, val} = key) when is_key(key) do
+    [type, val]
   end
 
-  def parse_params_rule(operator, params, rule) do
-    case String.ends_with?(params, ")") do
-      true ->
-        params = String.replace_suffix(params, ")", "")
-        {first, second} = parse_params!(operator, params)
-        {operator, first, second}
-      false ->
-        raise {:invalid_rule, rule, :closing_brackets_missing}
-    end
-  end
-
-  def parse_params!(operator, params) do
-
-  end
-
-  def parse_combination_rule(operator, rules, rule) do
-    case String.ends_with?(rules, "])") do
-      true ->
-        rules = String.replace_suffix(rules, "])", "") |> String.split(",")
-        {:or, Enum.map(rules, fn(rule) -> parse_rule!(rule) end)}
-      false ->
-        raise {:invalid_rule, rule, :closing_brackets_missing}
-    end
+  def from_s_expr(expr) do
+    expr
   end
 
   def match_rules?({:eq, k, v}, %Request{} = request) when is_key(k) and is_value(v) do
