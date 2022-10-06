@@ -5,7 +5,13 @@ defmodule Ockam.ABAC.ActionId do
 
   Contains :resource and :action components.
   """
-  defstruct [:resource, :action]
+  use TypedStruct
+
+  typedstruct do
+    plugin(Ockam.TypedCBOR.Plugin)
+    field(:resource, String.t(), minicbor: [key: 1])
+    field(:action, String.t(), minicbor: [key: 2])
+  end
 
   def new(resource, action) do
     %__MODULE__{resource: resource, action: action}

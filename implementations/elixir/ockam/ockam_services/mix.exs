@@ -52,6 +52,7 @@ defmodule Ockam.Services.MixProject do
       {:ockam_vault_software, path: "../ockam_vault_software"},
       {:ockam, path: "../ockam"},
       {:ockam_metrics, path: "../ockam_metrics"},
+      {:ockam_abac, path: "../ockam_abac"},
       {:ranch, "~> 2.1.0", override: true},
       ## Token lease manager
       {:httpoison, "~> 1.8"},

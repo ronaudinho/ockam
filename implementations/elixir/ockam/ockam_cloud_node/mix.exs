@@ -50,7 +50,6 @@ defmodule Ockam.CloudNode.MixProject do
       {:ex_doc, "~> 0.25", only: :dev, runtime: false},
       {:ockam_services, path: "../ockam_services"},
       {:ockam_kafka, path: "../ockam_kafka"},
-      {:ockam_abac, path: "../ockam_abac"},
       {:telemetry, "~> 1.0", override: true},
       {:telemetry_poller, "~> 1.0"},
       {:telemetry_influxdb, "~> 0.2.0"},

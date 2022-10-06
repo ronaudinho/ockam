@@ -49,7 +49,8 @@ defmodule Ockam.ABAC.MixProject do
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.1", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.25", only: :dev, runtime: false},
-      {:ockam, path: "../ockam"}
+      {:ockam, path: "../ockam"},
+      {:symbolic_expression, git: "https://github.com/rob-brown/SymbolicExpression"}
     ]
   end
 

@@ -39,6 +39,10 @@ defmodule Ockam.ABAC.Authorization do
     Ockam.ABAC.PolicyCheck.with_check(request, policies_or_storage, fn -> :ok end)
   end
 
+  def authorization() do
+    [{__MODULE__, :with_policy_check, [:message, :state]}]
+  end
+
   def generate_request(message, state) do
     ## Using address as a resource ID,
     ## maybe we should use some other property in the worker state
