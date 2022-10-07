@@ -1,99 +1,192 @@
-use crate::{Action, Key, Resource, Subject, Value};
+use ockam_core::compat::collections::BTreeMap;
+use core::fmt;
 
-use ockam_core::compat::{boxed::Box, vec::Vec};
-use serde::{Deserialize, Serialize};
+#[derive(Debug, Clone, Default)]
+pub struct Env(BTreeMap<String, Val>);
 
-use alloc::vec;
+impl Env {
+    pub fn new() -> Self {
+        Env(BTreeMap::new())
+    }
 
-/// Pimitive conditional operators used to construct ABAC policies.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Conditional {
-    /// Equality condition
-    Eq(Key, Value),
-    /// Equality condition
-    Lt(Key, Value),
-    /// Equality condition
-    Gt(Key, Value),
-    /// Boolean condition
-    Not(Box<Conditional>),
-    /// Boolean condition
-    And(Vec<Conditional>),
-    /// Boolean condition
-    Or(Vec<Conditional>),
-    /// Always true
-    True,
-    /// Always false
-    False,
+    pub fn get(&self, k: &str) -> Result<&Val, Error> {
+        self.0.get(k).ok_or_else(|| Error::Unbound(k.to_string()))
+    }
+
+    pub fn put<K: Into<String>>(&mut self, k: K, v: Val) -> &mut Self {
+        self.0.insert(k.into(), v);
+        self
+    }
 }
 
-impl Conditional {
-    /// Evaluate Policy for the given [`Subject`], [`Resource`],
-    /// [`Action`].
-    ///
-    /// TODO add support for resource, action attributes
-    pub fn evaluate(&self, subject: &Subject, resource: &Resource, action: &Action) -> bool {
-        let attrs = subject.attributes();
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Val {
+    S(String),
+    I(i64),
+    B(bool),
+    V(String),
+    C(Vec<Val>)
+}
+
+impl Val {
+    pub fn contains(&self, v: &Val) -> bool {
+        if let Val::C(set) = self {
+            set.contains(v)
+        } else {
+            false
+        }
+    }
+}
+
+impl fmt::Display for Val {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Conditional::Eq(k, v) => attrs.get(k).map(|a| a == v).unwrap_or(false),
-            Conditional::Lt(k, v) => attrs.get(k).map(|a| a < v).unwrap_or(false),
-            Conditional::Gt(k, v) => attrs.get(k).map(|a| a > v).unwrap_or(false),
-            Conditional::Not(c) => !c.evaluate(subject, resource, action),
-            Conditional::And(cs) => cs.iter().all(|c| c.evaluate(subject, resource, action)),
-            Conditional::Or(cs) => cs.iter().any(|c| c.evaluate(subject, resource, action)),
-            Conditional::True => true,
-            Conditional::False => false,
+            Val::S(s)     => write!(f, "{s:?}"),
+            Val::I(i)     => write!(f, "{i}"),
+            Val::B(true)  => f.write_str("true"),
+            Val::B(false) => f.write_str("false"),
+            Val::V(v)     => f.write_str(v),
+            Val::C(vs)    => {
+                let mut p = s_expr::Printer::default();
+                p.open(s_expr::GroupKind::Bracket);
+                for v in vs {
+                    p.text(&v.to_string())
+                }
+                p.close(s_expr::GroupKind::Bracket);
+                f.write_str(&p.to_string())
+            }
+        }
+    }
+}
+
+pub fn string<S: Into<String>>(s: S) -> Val {
+    Val::S(s.into())
+}
+
+pub fn var<S: Into<String>>(s: S) -> Val {
+    Val::V(s.into())
+}
+
+pub fn int(n: i64) -> Val {
+    Val::I(n)
+}
+
+pub fn bool(b: bool) -> Val {
+    Val::B(b)
+}
+
+pub fn set<V: IntoIterator<Item = Val>>(v: V) -> Val {
+    Val::C(v.into_iter().collect())
+}
+
+#[derive(Debug, Clone)]
+pub enum Cond {
+    False,
+    True,
+    Eq(Val, Val),
+    Lt(Val, Val),
+    Gt(Val, Val),
+    Member(Val, Val),
+    Not(Box<Cond>),
+    And(Vec<Cond>),
+    Or(Vec<Cond>)
+}
+
+// TODO: Proper error
+#[derive(Debug)]
+pub enum Error {
+    Unbound(String)
+}
+
+impl Cond {
+    #[rustfmt::skip]
+    pub fn apply(&self, env: &Env) -> Result<bool, Error> {
+        match self {
+            Cond::True  => Ok(true),
+            Cond::False => Ok(false),
+            Cond::Eq(a, b) => {
+                let a = if let Val::V(k) = a { env.get(k)? } else { a };
+                let b = if let Val::V(k) = b { env.get(k)? } else { b };
+                Ok(a == b)
+            }
+            Cond::Lt(a, b) => {
+                let a = if let Val::V(k) = a { env.get(k)? } else { a };
+                let b = if let Val::V(k) = b { env.get(k)? } else { b };
+                Ok(a < b)
+            }
+            Cond::Gt(a, b) => {
+                let a = if let Val::V(k) = a { env.get(k)? } else { a };
+                let b = if let Val::V(k) = b { env.get(k)? } else { b };
+                Ok(a > b)
+            }
+            Cond::Member(a, b) => {
+                let a = if let Val::V(k) = a { env.get(k)? } else { a };
+                let b = if let Val::V(k) = b { env.get(k)? } else { b };
+                Ok(a.contains(b))
+            }
+            Cond::Not(c)  => Ok(!c.apply(env)?),
+            Cond::And(cs) => {
+                for c in cs {
+                    if !c.apply(env)? {
+                        return Ok(false)
+                    }
+                }
+                Ok(true)
+            }
+            Cond::Or(cs) => {
+                for c in cs {
+                    if c.apply(env)? {
+                        return Ok(true)
+                    }
+                }
+                Ok(false)
+            }
         }
     }
 
-    /// Create a new `Conditional::And` with the given `Conditional`.
-    pub fn and(&self, other: &Conditional) -> Conditional {
-        Conditional::And(vec![self.clone(), other.clone()])
+    pub fn and(self, other: Cond) -> Cond {
+        Cond::And(vec![self, other])
     }
 
-    /// Create a new `Conditional::Or` with the given `Conditional`.
-    pub fn or(&self, other: &Conditional) -> Conditional {
-        Conditional::Or(vec![self.clone(), other.clone()])
+    pub fn or(self, other: Cond) -> Cond {
+        Cond::Or(vec![self, other])
     }
 
-    /// Create a new `Conditional::And` with the given [`Vec`] of `Conditional`s.
-    pub fn all(self, mut others: Vec<Conditional>) -> Conditional {
+    pub fn all(self, mut others: Vec<Cond>) -> Cond {
         others.insert(0, self);
-        Conditional::And(others)
+        Cond::And(others)
     }
 
-    /// Create a new `Conditional::Or` with the given [`Vec`] of `Conditional`s.
-    pub fn any(self, mut others: Vec<Conditional>) -> Conditional {
+    pub fn any(self, mut others: Vec<Cond>) -> Cond {
         others.insert(0, self);
-        Conditional::Or(others)
+        Cond::Or(others)
     }
 }
 
-/// Create a new [`Conditional::Eq`].
-pub fn eq<K: Into<Key>>(k: K, a: Value) -> Conditional {
-    Conditional::Eq(k.into(), a)
+pub fn t() -> Cond {
+    Cond::True
 }
 
-/// Create a new [`Conditional::Lt`].
-pub fn lt<K: Into<Key>>(k: K, a: Value) -> Conditional {
-    Conditional::Lt(k.into(), a)
+pub fn f() -> Cond {
+    Cond::False
 }
 
-/// Create a new [`Conditional::Gt`].
-pub fn gt<K: Into<Key>>(k: K, a: Value) -> Conditional {
-    Conditional::Gt(k.into(), a)
+pub fn eq(a: Val, b: Val) -> Cond {
+    Cond::Eq(a, b)
 }
 
-/// Create a new [`Conditional::Not`].
-pub fn not(c: Conditional) -> Conditional {
-    Conditional::Not(c.into())
+pub fn lt(a: Val, b: Val) -> Cond {
+    Cond::Lt(a, b)
 }
 
-/// Create a new [`Conditional::True`].
-pub fn t() -> Conditional {
-    Conditional::True
+pub fn gt(a: Val, b: Val) -> Cond {
+    Cond::Gt(a, b)
 }
 
-/// Create a new [`Conditional::False`].
-pub fn f() -> Conditional {
-    Conditional::False
+pub fn member(a: Val, b: Val) -> Cond {
+    Cond::Member(a, b)
+}
+
+pub fn not(c: Cond) -> Cond {
+    Cond::Not(c.into())
 }

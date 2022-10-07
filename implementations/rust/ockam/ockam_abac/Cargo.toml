@@ -41,4 +41,4 @@ alloc = [
 [dependencies]
 ockam_core = { path = "../ockam_core", version = "^0.70.0", default-features = false }
 ockam_identity = { path = "../ockam_identity", version = "^0.64.0", default_features = false }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
+s-expr = "0.1.0"

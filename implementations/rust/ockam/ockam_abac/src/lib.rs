@@ -1,6 +1,5 @@
 //! Attribute Based Access Control
 #![warn(
-    missing_docs,
     trivial_casts,
     trivial_numeric_casts,
     unused_import_braces,
@@ -15,9 +14,6 @@ extern crate core;
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod error;
-
-/// An example abac backend
 pub mod mem;
 
 mod policy;

@@ -2246,7 +2246,7 @@ version = "0.10.0"
 dependencies = [
  "ockam_core",
  "ockam_identity",
- "serde",
+ "s-expr",
 ]
 
 [[package]]
@@ -3263,6 +3263,15 @@ name = "ryu"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4501abdff3ae82a1c1b477a17252eb69cee9e66eb915c1abaa4f44d873df9f09"
+
+[[package]]
+name = "s-expr"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "191d30662f4e41950b51fd258c178b7593a617446a1cc966a42312d8a602892a"
+dependencies = [
+ "unicode-xid",
+]
 
 [[package]]
 name = "safemem"
