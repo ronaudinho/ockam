@@ -2,7 +2,7 @@
 
 use core::fmt::{self, Debug, Formatter};
 
-use super::{PolicyStorage, Action, Cond, Resource};
+use super::{PolicyStorage, Action, Expr, Resource};
 use ockam_core::Result;
 use ockam_core::{
     async_trait,
@@ -30,7 +30,7 @@ impl Memory {
 
 #[derive(Default)]
 pub struct Inner {
-    policies: BTreeMap<Resource, BTreeMap<Action, Cond>>,
+    policies: BTreeMap<Resource, BTreeMap<Action, Expr>>,
 }
 
 impl Inner {
@@ -42,11 +42,11 @@ impl Inner {
         self.policies.remove(r);
     }
 
-    fn get_policy(&self, r: &Resource, a: &Action) -> Option<Cond> {
+    fn get_policy(&self, r: &Resource, a: &Action) -> Option<Expr> {
         self.policies.get(r).and_then(|p| p.get(a).cloned())
     }
 
-    fn set_policy(&mut self, r: Resource, a: Action, p: &Cond) {
+    fn set_policy(&mut self, r: Resource, a: Action, p: &Expr) {
         self.policies
             .entry(r)
             .or_insert_with(BTreeMap::new)
@@ -60,11 +60,11 @@ impl PolicyStorage for Memory {
         Ok(self.inner.write().unwrap().del_policy(r))
     }
 
-    async fn get_policy(&self, r: &Resource, a: &Action) -> Result<Option<Cond>> {
+    async fn get_policy(&self, r: &Resource, a: &Action) -> Result<Option<Expr>> {
         Ok(self.inner.read().unwrap().get_policy(r, a))
     }
 
-    async fn set_policy(&self, r: Resource, a: Action, p: &Cond) -> Result<()> {
+    async fn set_policy(&self, r: Resource, a: Action, p: &Expr) -> Result<()> {
         Ok(self.inner.write().unwrap().set_policy(r, a, p))
     }
 }
@@ -72,16 +72,15 @@ impl PolicyStorage for Memory {
 #[cfg(test)]
 mod tests {
     use crate::mem::Memory;
-    use crate::{eq, int, string, var, set, member, Action, Resource, Env};
+    use crate::{parse, int, str, vec, Action, Resource, Env};
 
     #[test]
     fn example1() {
-        let condition = {
-            let is_john       = eq(var("subject.name"), string("John"));
-            let is_version1   = eq(var("resource.version"), string("1.0.0"));
-            let john_is_admin = member(var("resource.admins"), string("John"));
-            is_version1.and(is_john).and(john_is_admin)
-        };
+        let condition = r#"
+            (and (= resource.version "1.0.0")
+                 (= subject.name "John")
+                 (member "John" resource.admins))
+        "#;
 
         let action   = Action::new("r");
         let resource = Resource::new("/foo/bar/baz");
@@ -90,16 +89,16 @@ mod tests {
         store.inner
             .write()
             .unwrap()
-            .set_policy(resource.clone(), action.clone(), &condition);
+            .set_policy(resource.clone(), action.clone(), &parse(condition).unwrap());
 
         let mut e = Env::new();
         e.put("subject.age", int(25))
-            .put("subject.name", string("John"))
-            .put("resource.version", string("1.0.0"))
-            .put("resource.admins", set([string("root"), string("John")]));
+            .put("subject.name", str("John"))
+            .put("resource.version", str("1.0.0"))
+            .put("resource.admins", vec([str("root"), str("John")]));
 
 
         let policy = store.inner.write().unwrap().get_policy(&resource, &action).unwrap();
-        assert!(policy.apply(&e).unwrap());
+        assert!(policy.eval(&e).unwrap().is_true())
     }
 }

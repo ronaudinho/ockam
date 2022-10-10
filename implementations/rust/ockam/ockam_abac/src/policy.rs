@@ -1,192 +1,348 @@
 use ockam_core::compat::collections::BTreeMap;
 use core::fmt;
 
+// TODO: Proper error
+#[derive(Debug)]
+pub enum Error {
+    Unbound(String),
+    UnknownFn(String),
+    InvalidType,
+    Parser(s_expr::ParserError),
+    NotSupported(&'static str),
+    Overflow
+}
+
+impl From<s_expr::ParserError> for Error {
+    fn from(e: s_expr::ParserError) -> Self {
+        Self::Parser(e)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct Env(BTreeMap<String, Val>);
+pub struct Env(BTreeMap<String, Expr>);
 
 impl Env {
     pub fn new() -> Self {
         Env(BTreeMap::new())
     }
 
-    pub fn get(&self, k: &str) -> Result<&Val, Error> {
+    pub fn get(&self, k: &str) -> Result<&Expr, Error> {
         self.0.get(k).ok_or_else(|| Error::Unbound(k.to_string()))
     }
 
-    pub fn put<K: Into<String>>(&mut self, k: K, v: Val) -> &mut Self {
-        self.0.insert(k.into(), v);
+    pub fn put<K: Into<String>, E: Into<Expr>>(&mut self, k: K, v: E) -> &mut Self {
+        self.0.insert(k.into(), v.into());
         self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Val {
-    S(String),
-    I(i64),
-    B(bool),
-    V(String),
-    C(Vec<Val>)
+pub enum Expr {
+    Unit,
+    Str(String),
+    Int(i64),
+    Bool(bool),
+    Var(String),
+    List(Vec<Expr>),
+    Vec(Vec<Expr>)
 }
 
-impl Val {
-    pub fn contains(&self, v: &Val) -> bool {
-        if let Val::C(set) = self {
-            set.contains(v)
-        } else {
-            false
-        }
+impl From<bool> for Expr {
+    fn from(b: bool) -> Self {
+        Self::Bool(b)
     }
 }
 
-impl fmt::Display for Val {
+impl From<i64> for Expr {
+    fn from(i: i64) -> Self {
+        Self::Int(i)
+    }
+}
+
+pub fn t() -> Expr {
+    Expr::Bool(true)
+}
+
+pub fn f() -> Expr {
+    Expr::Bool(false)
+}
+
+pub fn int<I: Into<i64>>(i: I) -> Expr {
+    Expr::Int(i.into())
+}
+
+pub fn var<S: Into<String>>(s: S) -> Expr {
+    Expr::Var(s.into())
+}
+
+pub fn vec<T: IntoIterator<Item = Expr>>(xs: T) -> Expr {
+    Expr::Vec(xs.into_iter().collect())
+}
+
+pub fn str<S: Into<String>>(s: S) -> Expr {
+    Expr::Str(s.into())
+}
+
+pub fn parse(s: &str) -> Result<Expr, Error> {
+    Expr::try_from(s)
+}
+
+impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Val::S(s)     => write!(f, "{s:?}"),
-            Val::I(i)     => write!(f, "{i}"),
-            Val::B(true)  => f.write_str("true"),
-            Val::B(false) => f.write_str("false"),
-            Val::V(v)     => f.write_str(v),
-            Val::C(vs)    => {
+            Expr::Str(s)      => write!(f, "{s:?}"),
+            Expr::Int(i)      => write!(f, "{i}"),
+            Expr::Bool(true)  => f.write_str("true"),
+            Expr::Bool(false) => f.write_str("false"),
+            Expr::Var(v)      => f.write_str(v),
+            Expr::List(es)    => {
+                let mut p = s_expr::Printer::default();
+                p.open(s_expr::GroupKind::Paren);
+                for e in es {
+                    p.text(&e.to_string())
+                }
+                p.close(s_expr::GroupKind::Paren);
+                f.write_str(&p.to_string())
+            }
+            Expr::Vec(es) => {
                 let mut p = s_expr::Printer::default();
                 p.open(s_expr::GroupKind::Bracket);
-                for v in vs {
-                    p.text(&v.to_string())
+                for e in es {
+                    p.text(&e.to_string())
                 }
                 p.close(s_expr::GroupKind::Bracket);
                 f.write_str(&p.to_string())
             }
+            Expr::Unit => f.write_str("()")
         }
     }
 }
 
-pub fn string<S: Into<String>>(s: S) -> Val {
-    Val::S(s.into())
+impl TryFrom<&str> for Expr {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut parser = s_expr::Parser::new(value);
+        while let Some(e) = parser.next()? {
+            if let Some(x) = Expr::from_element(&e.inner)? {
+                return Ok(x)
+            }
+        }
+        Ok(Expr::Unit)
+    }
 }
 
-pub fn var<S: Into<String>>(s: S) -> Val {
-    Val::V(s.into())
-}
-
-pub fn int(n: i64) -> Val {
-    Val::I(n)
-}
-
-pub fn bool(b: bool) -> Val {
-    Val::B(b)
-}
-
-pub fn set<V: IntoIterator<Item = Val>>(v: V) -> Val {
-    Val::C(v.into_iter().collect())
-}
-
-#[derive(Debug, Clone)]
-pub enum Cond {
-    False,
-    True,
-    Eq(Val, Val),
-    Lt(Val, Val),
-    Gt(Val, Val),
-    Member(Val, Val),
-    Not(Box<Cond>),
-    And(Vec<Cond>),
-    Or(Vec<Cond>)
-}
-
-// TODO: Proper error
-#[derive(Debug)]
-pub enum Error {
-    Unbound(String)
-}
-
-impl Cond {
-    #[rustfmt::skip]
-    pub fn apply(&self, env: &Env) -> Result<bool, Error> {
+impl Expr {
+    pub fn eval(&self, env: &Env) -> Result<Expr, Error> {
         match self {
-            Cond::True  => Ok(true),
-            Cond::False => Ok(false),
-            Cond::Eq(a, b) => {
-                let a = if let Val::V(k) = a { env.get(k)? } else { a };
-                let b = if let Val::V(k) = b { env.get(k)? } else { b };
-                Ok(a == b)
-            }
-            Cond::Lt(a, b) => {
-                let a = if let Val::V(k) = a { env.get(k)? } else { a };
-                let b = if let Val::V(k) = b { env.get(k)? } else { b };
-                Ok(a < b)
-            }
-            Cond::Gt(a, b) => {
-                let a = if let Val::V(k) = a { env.get(k)? } else { a };
-                let b = if let Val::V(k) = b { env.get(k)? } else { b };
-                Ok(a > b)
-            }
-            Cond::Member(a, b) => {
-                let a = if let Val::V(k) = a { env.get(k)? } else { a };
-                let b = if let Val::V(k) = b { env.get(k)? } else { b };
-                Ok(a.contains(b))
-            }
-            Cond::Not(c)  => Ok(!c.apply(env)?),
-            Cond::And(cs) => {
-                for c in cs {
-                    if !c.apply(env)? {
-                        return Ok(false)
+            Expr::Var(name) => env.get(name).cloned(),
+            Expr::List(es)  => match &es[..] {
+                []                    => Ok(Expr::Unit),
+                [Expr::Var(name), ..] => {
+                    match name.as_str() {
+                        "and" => eval_and(&es[1..], env),
+                        "or"  => eval_or(&es[1..], env),
+                        "not" => eval_not(&es[1..], env),
+                        "if"  => eval_if(&es[1..], env),
+                        "+"   => eval_arith(&es[1..], env, Some(0), i64::checked_add),
+                        "*"   => eval_arith(&es[1..], env, Some(1), i64::checked_mul),
+                        "-"   => eval_arith(&es[1..], env, None, i64::checked_sub),
+                        "/"   => eval_arith(&es[1..], env, None, i64::checked_div),
+                        "in" | "member" => eval_in(&es[1..], env),
+                        "="  | "eq?" => eval_eq(&es[1..], env),
+                        "!=" | "ne?" => eval_ne(&es[1..], env),
+                        _     => return Err(Error::UnknownFn(name.to_string()))
                     }
                 }
-                Ok(true)
+                _ => Err(Error::InvalidType)
             }
-            Cond::Or(cs) => {
-                for c in cs {
-                    if c.apply(env)? {
-                        return Ok(true)
-                    }
-                }
-                Ok(false)
-            }
+            expr => Ok(expr.clone())
         }
     }
 
-    pub fn and(self, other: Cond) -> Cond {
-        Cond::And(vec![self, other])
+    fn from_element(value: &s_expr::Element<'_>) -> Result<Option<Self>, Error> {
+        use s_expr::{Element, Atom, GroupKind};
+        match value {
+            Element::Atom(a) => match a {
+                Atom::String(s)   => Ok(Some(Expr::Str(s.to_string()))),
+                Atom::Integral(i) => Ok(Some(Expr::Int(i64::from(i.to_u32().unwrap())))),
+                Atom::Ident(i)    => match *i {
+                    "true"  => Ok(Some(Expr::Bool(true))),
+                    "false" => Ok(Some(Expr::Bool(false))),
+                    _       => Ok(Some(Expr::Var(i.to_string())))
+                }
+                Atom::Decimal(i)  => Err(Error::NotSupported("decimal")),
+                Atom::Bytes(i)    => Err(Error::NotSupported("bytes"))
+            }
+            Element::Comment(_) => Ok(None),
+            Element::Group(GroupKind::Paren, list) => {
+                let mut xs = Vec::new();
+                for x in list {
+                    if let Some(x) = Expr::from_element(&x.inner)? {
+                        xs.push(x)
+                    }
+                }
+                Ok(Some(Expr::List(xs)))
+            }
+            Element::Group(GroupKind::Bracket, vec) => {
+                let mut xs = Vec::new();
+                for x in vec {
+                    if let Some(x) = Expr::from_element(&x.inner)? {
+                        xs.push(x)
+                    }
+                }
+                Ok(Some(Expr::Vec(xs)))
+            }
+            Element::Group(GroupKind::Brace, _) => Err(Error::NotSupported("braces"))
+        }
     }
 
-    pub fn or(self, other: Cond) -> Cond {
-        Cond::Or(vec![self, other])
+    pub fn is_true(&self) -> bool {
+        matches!(self, Expr::Bool(true))
     }
 
-    pub fn all(self, mut others: Vec<Cond>) -> Cond {
-        others.insert(0, self);
-        Cond::And(others)
-    }
-
-    pub fn any(self, mut others: Vec<Cond>) -> Cond {
-        others.insert(0, self);
-        Cond::Or(others)
+    pub fn is_false(&self) -> bool {
+        matches!(self, Expr::Bool(false))
     }
 }
 
-pub fn t() -> Cond {
-    Cond::True
+fn eval_and(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    for e in expr {
+        match e.eval(env)? {
+            Expr::Bool(true)  => continue,
+            Expr::Bool(false) => return Ok(Expr::Bool(false)),
+            other             => return Err(Error::InvalidType)
+        }
+    }
+    Ok(Expr::Bool(true))
 }
 
-pub fn f() -> Cond {
-    Cond::False
+fn eval_or(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    for e in expr {
+        match e.eval(env)? {
+            Expr::Bool(true)  => return Ok(Expr::Bool(true)),
+            Expr::Bool(false) => continue,
+            other             => return Err(Error::InvalidType)
+        }
+    }
+    Ok(Expr::Bool(false))
+
 }
 
-pub fn eq(a: Val, b: Val) -> Cond {
-    Cond::Eq(a, b)
+fn eval_if(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    match expr {
+        [test, t, f] => match test.eval(env)? {
+            Expr::Bool(true)  => t.eval(env),
+            Expr::Bool(false) => f.eval(env),
+            other             => Err(Error::InvalidType)
+        }
+        other => Err(Error::InvalidType)
+    }
 }
 
-pub fn lt(a: Val, b: Val) -> Cond {
-    Cond::Lt(a, b)
+fn eval_not(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    if expr.len() != 2 {
+        return Err(Error::InvalidType)
+    }
+    match expr[1].eval(env)? {
+        Expr::Bool(b) => Ok(Expr::Bool(!b)),
+        other         => Err(Error::InvalidType)
+    }
 }
 
-pub fn gt(a: Val, b: Val) -> Cond {
-    Cond::Gt(a, b)
+fn eval_arith<F>(expr: &[Expr], env: &Env, z: Option<i64>, f: F) -> Result<Expr, Error>
+where
+    F: Fn(i64, i64) -> Option<i64>
+{
+    match expr {
+        []      => z.ok_or(Error::InvalidType).map(Expr::Int),
+        [a, ..] => {
+            if let Expr::Int(mut i) = a.eval(env)? {
+                for e in &expr[1..] {
+                    match e.eval(env)? {
+                        Expr::Int(j) => i = f(i, j).ok_or(Error::Overflow)?,
+                        other        => return Err(Error::InvalidType)
+                    }
+                }
+                Ok(Expr::Int(i))
+            } else {
+                return Err(Error::InvalidType)
+            }
+        }
+    }
 }
 
-pub fn member(a: Val, b: Val) -> Cond {
-    Cond::Member(a, b)
+fn eval_eq(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    if let Some(a) = expr.first() {
+        let x = a.eval(env)?;
+        for e in expr.iter().skip(1) {
+            let y = e.eval(env)?;
+            if x != y {
+                return Ok(Expr::Bool(false))
+            }
+        }
+    }
+    Ok(Expr::Bool(true))
 }
 
-pub fn not(c: Cond) -> Cond {
-    Cond::Not(c.into())
+fn eval_ne(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    if let Expr::Bool(b) = eval_eq(expr, env)? {
+        Ok(Expr::Bool(!b))
+    } else {
+        Err(Error::InvalidType)
+    }
+}
+
+fn eval_in(expr: &[Expr], env: &Env) -> Result<Expr, Error> {
+    if expr.len() != 2 {
+        return Err(Error::InvalidType)
+    }
+    let a = expr[0].eval(env)?;
+    if let Expr::Vec(vs) = expr[1].eval(env)? {
+        Ok(Expr::Bool(vs.contains(&a)))
+    } else {
+        Err(Error::InvalidType)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Env, Expr, str, parse};
+
+    #[test]
+    fn hello1() {
+        const S: &str = r#"
+            (and (= subject.name "foo")
+                 (= resource.tag "blue"))
+        "#;
+        let expr = Expr::try_from(S).unwrap();
+        let mut env = Env::new();
+        env.put("subject.name", str("foo"))
+           .put("resource.tag", str("blue"));
+        println!("{expr} {}", expr.eval(&env).unwrap())
+    }
+
+    #[test]
+    fn hello2() {
+        const S: &str = r#"
+            (if (= 7 (- (+ 1 2 3 4) 3)) "yes" "no")
+        "#;
+        let expr = Expr::try_from(S).unwrap();
+        let mut env = Env::new();
+        env.put("subject.name", str("foo"))
+           .put("resource.tag", str("blue"));
+        println!("{expr} {}", expr.eval(&env).unwrap())
+    }
+
+    #[test]
+    fn hello3() {
+        const S: &str = r#"
+            (in subject.email resource.emails)
+        "#;
+        let expr = Expr::try_from(S).unwrap();
+        let mut env = Env::new();
+        env.put("subject.email", str("foo@example.com"))
+           .put("resource.emails", parse(r#"["root@example.com" "foo@example.com"]"#).unwrap());
+        println!("{expr} {}", expr.eval(&env).unwrap())
+    }
 }
