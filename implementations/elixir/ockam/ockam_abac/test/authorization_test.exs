@@ -2,8 +2,10 @@ defmodule Ockam.ABAC.Authorization.Tests do
   use ExUnit.Case
 
   alias Ockam.ABAC.ActionId
-  alias Ockam.ABAC.Policy
+  alias Ockam.ABAC.AttributeRules
   alias Ockam.ABAC.Authorization
+
+  alias Ockam.ABAC.Policy
 
   alias Ockam.Message
 
@@ -14,26 +16,28 @@ defmodule Ockam.ABAC.Authorization.Tests do
       {:ok, me1} = Ockam.Node.register_random_address()
       {:ok, me2} = Ockam.Node.register_random_address()
 
+      {:ok, attribute_rules} =
+        AttributeRules.new({:or,
+         [
+           ## Rule to accept messages on address echoer1 from address me1
+           {:and,
+            [
+              {:eq, {:action, "to"}, "echoer1"},
+              {:eq, {:action, "from"}, me1}
+            ]},
+
+           ## Rule to accept messages on address echoer2 from address me2
+
+           {:and,
+            [
+              {:eq, {:action, "to"}, "echoer2"},
+              {:eq, {:action, "from"}, me2}
+            ]}
+         ]})
+
       policy = %Policy{
         action_id: ActionId.new("echoer1", "handle_message"),
-        attribute_rules:
-          {:or,
-           [
-             ## Rule to accept messages on address echoer1 from address me1
-             {:and,
-              [
-                {:eq, {:action, "to"}, "echoer1"},
-                {:eq, {:action, "from"}, me1}
-              ]},
-
-             ## Rule to accept messages on address echoer2 from address me2
-
-             {:and,
-              [
-                {:eq, {:action, "to"}, "echoer2"},
-                {:eq, {:action, "from"}, me2}
-              ]}
-           ]}
+        attribute_rules: attribute_rules
       }
 
       ## Set up echoer with both policies
@@ -64,9 +68,12 @@ defmodule Ockam.ABAC.Authorization.Tests do
     end
 
     test "worker attributes as resource and local metadata as action attributes" do
+      {:ok, attribute_rules} =
+        AttributeRules.new({:member, {:action, "domain"}, {:resource, "domains"}})
+
       policy = %Policy{
         action_id: ActionId.new("echoer", "handle_message"),
-        attribute_rules: {:member, {:action, "domain"}, {:resource, "domains"}}
+        attribute_rules: attribute_rules
       }
 
       {:ok, echoer} =
@@ -95,9 +102,11 @@ defmodule Ockam.ABAC.Authorization.Tests do
     end
 
     test "identity_id is a subject attribute" do
+      {:ok, attribute_rules} = AttributeRules.new({:eq, {:subject, "identity_id"}, "foo"})
+
       policy = %Policy{
         action_id: ActionId.new("echoer", "handle_message"),
-        attribute_rules: {:eq, {:subject, "identity_id"}, "foo"}
+        attribute_rules: attribute_rules
       }
 
       {:ok, echoer} =

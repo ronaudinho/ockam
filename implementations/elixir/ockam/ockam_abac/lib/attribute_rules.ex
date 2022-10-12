@@ -3,6 +3,9 @@ defmodule Ockam.ABAC.AttributeRules do
   Attribute rules matching AST for Ockam.ABAC
   """
 
+  alias Ockam.ABAC.AttributeRules.Formatter
+  alias Ockam.ABAC.AttributeRules.Parser
+
   alias Ockam.ABAC.Request
 
   ## Only binaries for now
@@ -25,6 +28,9 @@ defmodule Ockam.ABAC.AttributeRules do
           | {:not, rule()}
           | {:and, [rule()]}
           | {:or, [rule()]}
+          | {:if, rule(), rule(), rule()}
+
+  defstruct [:rule]
 
   defguard is_key(key)
            when is_tuple(key) and tuple_size(key) == 2 and
@@ -32,55 +38,49 @@ defmodule Ockam.ABAC.AttributeRules do
                      elem(key, 0) == :subject)
 
   ## TODO: support more value types for gt/lt
-  defguard is_value(value) when is_binary(value)
+  defguard is_value(value) when is_binary(value) or is_boolean(value) or is_number(value)
 
-  def format(rule) do
-    to_s_expr(rule)
-    |> SymbolicExpression.Writer.write()
-  end
+  defguard is_filter(filter)
+           when filter == :eq or filter == :lt or filter == :gt or filter == :neq
 
   def parse(string) do
-    SymbolicExpression.Parser.parse(string)
-    |> from_s_expr()
+    case Parser.parse(string) do
+      {:ok, rule} -> new(rule)
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  def to_s_expr(simple) when is_boolean(simple) do
-    [simple]
-  end
-  def to_s_expr({op, key, val}) when is_key(key) and is_value(val) do
-    [op, to_s_expr(key), val]
-  end
-  def to_s_expr({op, key1, key2}) when is_key(key1) and is_key(key2) do
-    [op, to_s_expr(key1), to_s_expr(key2)]
-  end
-  def to_s_expr({:member, key, list}) when is_key(key) and is_list(list) do
-    [:member, to_s_expr(key), [:list, list]]
-  end
-  def to_s_expr({:not, rule}) when is_boolean(rule) or is_tuple(rule) do
-    [:not, to_s_expr(rule)]
-  end
-  def to_s_expr({op, rules}) when (op == :and or op == :or) and is_list(rules) do
-    [op, [:list, Enum.map(rules, fn(rule) -> to_s_expr(rule) end)]]
-  end
-  def to_s_expr({type, val} = key) when is_key(key) do
-    [type, val]
+  def format(%__MODULE__{rule: rule}) do
+    Formatter.format(rule)
   end
 
-  def from_s_expr(expr) do
-    expr
+  def new(rules_def) do
+    case validate(rules_def) do
+      :ok ->
+        {:ok, %__MODULE__{rule: rules_def}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  def match_rules?({:eq, k, v}, %Request{} = request) when is_key(k) and is_value(v) do
-    case fetch_attribute(request, k) do
-      {:ok, val} -> val == v
+  def match_rules?(%__MODULE__{rule: rule}, %Request{} = request) do
+    do_match_rules?(rule, request)
+  end
+
+  defp do_match_rules?({op, key, value}, request)
+       when is_filter(op) and is_key(key) and is_value(value) do
+    case fetch_attribute(request, key) do
+      {:ok, attribute_value} -> compare(op, attribute_value, value)
       :error -> false
     end
   end
 
-  def match_rules?({:eq, k1, k2}, %Request{} = request) when is_key(k1) and is_key(k2) do
-    with {:ok, val1} <- fetch_attribute(request, k1),
-         {:ok, val2} <- fetch_attribute(request, k2) do
-      val1 == val2
+  defp do_match_rules?({op, key1, key2}, request)
+       when is_filter(op) and is_key(key1) and is_key(key2) do
+    with {:ok, val1} <- fetch_attribute(request, key1),
+         {:ok, val2} <- fetch_attribute(request, key2) do
+      compare(op, val1, val2)
     else
       _other ->
         ## TODO: improve match failure reporting
@@ -88,20 +88,10 @@ defmodule Ockam.ABAC.AttributeRules do
     end
   end
 
-  def match_rules?({:member, k, list}, %Request{} = request) when is_key(k) and is_list(list) do
-    case fetch_attribute(request, k) do
-      {:ok, val} ->
-        Enum.member?(list, val)
-
-      :error ->
-        false
-    end
-  end
-
-  def match_rules?({:member, k1, k2}, %Request{} = request) when is_key(k1) and is_key(k2) do
-    with {:ok, list} when is_list(list) <- fetch_attribute(request, k2),
-         {:ok, val} <- fetch_attribute(request, k1) do
-      Enum.member?(list, val)
+  defp do_match_rules?({:member, element, list}, request) do
+    with {:ok, element} <- member_element(element, request),
+         {:ok, list} <- member_list(list, request) do
+      Enum.member?(list, element)
     else
       _other ->
         ## TODO: improve match failure reporting
@@ -109,32 +99,62 @@ defmodule Ockam.ABAC.AttributeRules do
     end
   end
 
-  def match_rules?({:gt, _k, _v}, %Request{} = _request) do
-    raise "gt not implemented"
+  defp do_match_rules?({:not, rules}, request) do
+    not do_match_rules?(rules, request)
   end
 
-  def match_rules?({:lt, _k, _v}, %Request{} = _request) do
-    raise "gt not implemented"
+  defp do_match_rules?({:and, rules_list}, request) do
+    Enum.all?(rules_list, fn rules -> do_match_rules?(rules, request) end)
   end
 
-  def match_rules?({:not, rules}, %Request{} = request) do
-    not match_rules?(rules, request)
+  defp do_match_rules?({:or, rules_list}, request) do
+    Enum.any?(rules_list, fn rules -> do_match_rules?(rules, request) end)
   end
 
-  def match_rules?({:and, rules_list}, %Request{} = request) do
-    Enum.all?(rules_list, fn rules -> match_rules?(rules, request) end)
+  defp do_match_rules?({:if, condition, true_rule, false_rule}, request) do
+    case do_match_rules?(condition, request) do
+      true ->
+        do_match_rules?(true_rule, request)
+
+      false ->
+        do_match_rules?(false_rule, request)
+    end
   end
 
-  def match_rules?({:or, rules_list}, %Request{} = request) do
-    Enum.any?(rules_list, fn rules -> match_rules?(rules, request) end)
-  end
-
-  def match_rules?(true, _request) do
+  defp do_match_rules?(true, _request) do
     true
   end
 
-  def match_rules?(false, _request) do
+  defp do_match_rules?(false, _request) do
     false
+  end
+
+  defp do_match_rules?(_rule, _request) do
+    false
+  end
+
+  defp compare(:eq, val1, val2), do: val1 == val2
+  defp compare(:neq, val1, val2), do: val1 == val2
+  defp compare(:gt, val1, val2), do: val1 > val2
+  defp compare(:lt, val1, val2), do: val1 < val2
+
+  defp member_element(key, request) when is_key(key) do
+    fetch_attribute(request, key)
+  end
+
+  defp member_element(value, _request) when is_value(value) do
+    {:ok, value}
+  end
+
+  defp member_list(key, request) when is_key(key) do
+    case fetch_attribute(request, key) do
+      {:ok, list} when is_list(list) -> {:ok, list}
+      _other -> :error
+    end
+  end
+
+  defp member_list(list, _request) when is_list(list) do
+    {:ok, list}
   end
 
   def fetch_attribute(%Request{} = request, {type, name}) do
@@ -143,7 +163,72 @@ defmodule Ockam.ABAC.AttributeRules do
     |> Map.fetch(name)
   end
 
-  def atrtibute_field(:resource), do: :resource_attributes
-  def atrtibute_field(:action), do: :action_attributes
-  def atrtibute_field(:subject), do: :subject_attributes
+  defp atrtibute_field(:resource), do: :resource_attributes
+  defp atrtibute_field(:action), do: :action_attributes
+  defp atrtibute_field(:subject), do: :subject_attributes
+
+  defp validate(bool) when is_boolean(bool) do
+    :ok
+  end
+
+  defp validate({filter, key, key_or_value})
+       when is_filter(filter) and is_key(key) and (is_key(key_or_value) or is_value(key_or_value)) do
+    :ok
+  end
+
+  defp validate({:member, key_or_value, key})
+       when is_key(key) and (is_key(key_or_value) or is_value(key_or_value)) do
+    :ok
+  end
+
+  defp validate({:member, key_or_value, list} = rule)
+       when is_list(list) and (is_key(key_or_value) or is_value(key_or_value)) do
+    valid_elements = Enum.all?(list, fn el -> is_value(el) end)
+
+    case valid_elements do
+      true ->
+        :ok
+
+      false ->
+        {:error, {:invalid_list_elements, rule}}
+    end
+  end
+
+  defp validate({comb, [_rule1, _rule2 | _other] = rules}) when comb == :and or comb == :or do
+    errors =
+      rules
+      |> Enum.map(fn rule -> validate(rule) end)
+      |> Enum.filter(fn
+        :ok -> false
+        _error -> true
+      end)
+
+    case errors do
+      [] -> :ok
+      errors -> {:error, {:internal_rules_invalid, errors}}
+    end
+  end
+
+  defp validate({:not, rule}) do
+    validate(rule)
+  end
+
+  defp validate({:if, condition, true_rule, false_rule}) do
+    errors =
+      [condition, true_rule, false_rule]
+      |> Enum.map(fn rule -> validate(rule) end)
+      |> Enum.filter(fn
+        :ok -> false
+        _error -> true
+      end)
+
+    case errors do
+      [] -> :ok
+      errors -> {:error, {:internal_rules_invalid, errors}}
+    end
+  end
+
+  defp validate(invalid) do
+    {:error, {:invalid_rule, invalid}}
+  end
 end

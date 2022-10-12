@@ -1,8 +1,8 @@
 defmodule Ockam.ABAC.AttributeRules.Tests do
   use ExUnit.Case
 
-  alias Ockam.ABAC.AttributeRules
   alias Ockam.ABAC.ActionId
+  alias Ockam.ABAC.AttributeRules
   alias Ockam.ABAC.Request
 
   describe "single attribute rules" do
@@ -21,7 +21,7 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
         action_attributes: %{}
       }
 
-      rule = {:eq, {:subject, "foo"}, "bar"}
+      {:ok, rule} = AttributeRules.new({:eq, {:subject, "foo"}, "bar"})
       assert AttributeRules.match_rules?(rule, request_matching)
       refute AttributeRules.match_rules?(rule, request_not_matching)
     end
@@ -58,7 +58,7 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
         action_attributes: %{}
       }
 
-      rule = {:member, {:subject, "foo"}, ["bar", "baf"]}
+      {:ok, rule} = AttributeRules.new({:member, {:subject, "foo"}, ["bar", "baf"]})
       assert AttributeRules.match_rules?(rule, request_matching1)
       assert AttributeRules.match_rules?(rule, request_matching2)
       refute AttributeRules.match_rules?(rule, request_not_matching)
@@ -81,7 +81,7 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
         action_attributes: %{"foo2" => "not_bar"}
       }
 
-      rule = {:eq, {:subject, "foo1"}, {:action, "foo2"}}
+      {:ok, rule} = AttributeRules.new({:eq, {:subject, "foo1"}, {:action, "foo2"}})
       assert AttributeRules.match_rules?(rule, request_matching)
       refute AttributeRules.match_rules?(rule, request_not_matching)
     end
@@ -118,7 +118,7 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
         action_attributes: %{}
       }
 
-      rule = {:member, {:subject, "foo"}, {:action, "foo_list"}}
+      {:ok, rule} = AttributeRules.new({:member, {:subject, "foo"}, {:action, "foo_list"}})
 
       assert AttributeRules.match_rules?(rule, request_matching1)
       assert AttributeRules.match_rules?(rule, request_matching2)
@@ -128,10 +128,6 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
 
   describe "logic rules" do
     test "simple rules" do
-      ## true and false are valid rules
-      true_rule = true
-      false_rule = false
-
       empty_request = %Request{
         action_id: ActionId.new("", ""),
         subject_attributes: %{},
@@ -139,16 +135,19 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
         resource_attributes: %{}
       }
 
+      {:ok, true_rule} = AttributeRules.new(true)
       assert AttributeRules.match_rules?(true_rule, empty_request)
+
+      {:ok, false_rule} = AttributeRules.new(false)
       refute AttributeRules.match_rules?(false_rule, empty_request)
 
-      and_rule = {:and, [true_rule, false_rule]}
+      {:ok, and_rule} = AttributeRules.new({:and, [true, false]})
       refute AttributeRules.match_rules?(and_rule, empty_request)
 
-      or_rule = {:or, [true_rule, false_rule]}
+      {:ok, or_rule} = AttributeRules.new({:or, [true, false]})
       assert AttributeRules.match_rules?(or_rule, empty_request)
 
-      not_rule = {:not, false_rule}
+      {:ok, not_rule} = AttributeRules.new({:not, false})
       assert AttributeRules.match_rules?(not_rule, empty_request)
     end
 
@@ -174,12 +173,14 @@ defmodule Ockam.ABAC.AttributeRules.Tests do
         resource_attributes: %{"people" => ["Ivan", "Marya"]}
       }
 
-      rule =
-        {:and,
-         [
-           {:eq, {:action, "method"}, "get"},
-           {:member, {:subject, "name"}, {:resource, "people"}}
-         ]}
+      {:ok, rule} =
+        AttributeRules.new(
+          {:and,
+           [
+             {:eq, {:action, "method"}, "get"},
+             {:member, {:subject, "name"}, {:resource, "people"}}
+           ]}
+        )
 
       assert AttributeRules.match_rules?(rule, request_matching)
       refute AttributeRules.match_rules?(rule, request_not_matching1)

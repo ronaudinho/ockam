@@ -50,7 +50,7 @@ defmodule Ockam.ABAC.MixProject do
       {:dialyxir, "~> 1.1", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.25", only: :dev, runtime: false},
       {:ockam, path: "../ockam"},
-      {:symbolic_expression, git: "https://github.com/rob-brown/SymbolicExpression"}
+      {:neotoma, git: "https://github.com/seancribbs/neotoma.git", runtime: false}
     ]
   end
 
@@ -83,7 +83,8 @@ defmodule Ockam.ABAC.MixProject do
       "lint.dialyzer": "dialyzer --format dialyxir",
       lint: ["lint.format", "lint.credo"],
       # test: "test --no-start",
-      "test.cover": "test --no-start --cover"
+      "test.cover": "test --no-start --cover",
+      compile: ["compile", "compile_rules"]
     ]
   end
 end
