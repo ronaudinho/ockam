@@ -357,6 +357,17 @@ pub(crate) mod project {
         ))
         .body(CloudRequestWrapper::bare(&cmd.cloud_opts.route()))
     }
+
+    pub(crate) fn okta_addon_config<'a>(project_id : &'a str, cmd: &'a OktaConfigCommand)
+     -> RequestBuilder<'a, CloudRequestWrapper<'a, OktaConfig<'a>>> {
+        let b = OktaConfig::new(
+            cmd.tenant_url.as_str(),
+            cmd.certificate.as_str(),
+        );
+        Request::put(format!("v0/project-addons-config/{}/okta", project_id))
+            .body(CloudRequestWrapper::new(b, &cmd.cloud_opts.route()))
+    }
+
 }
 
 ////////////// !== parsers

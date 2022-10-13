@@ -13,7 +13,7 @@ use tracing::{debug, error, trace};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{filter::LevelFilter, fmt, EnvFilter};
 
-pub use addon::AddonCommand;
+//pub use addon::AddonCommand;
 pub use config::*;
 use ockam::{route, Address, Context, NodeBuilder, Route, TcpTransport, TCP};
 use ockam_api::nodes::NODEMANAGER_ADDR;

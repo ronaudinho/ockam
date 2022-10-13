@@ -7,6 +7,7 @@ mod info;
 mod list;
 mod list_enrollers;
 mod show;
+mod addons;
 pub mod util;
 
 pub use info::ProjectInfo;
@@ -24,6 +25,8 @@ pub use info::InfoCommand;
 pub use list::ListCommand;
 pub use list_enrollers::ListEnrollersCommand;
 pub use show::ShowCommand;
+pub use addons::ConfigureAddonCommand;
+pub use addons::OktaConfigCommand;
 
 use crate::CommandGlobalOpts;
 
@@ -46,6 +49,7 @@ pub enum ProjectSubcommand {
     ListEnrollers(ListEnrollersCommand),
     DeleteEnroller(DeleteEnrollerCommand),
     Enroll(EnrollCommand),
+    ConfigureAddon(ConfigureAddonCommand),
 }
 
 impl ProjectCommand {
@@ -60,6 +64,8 @@ impl ProjectCommand {
             ProjectSubcommand::DeleteEnroller(c) => c.run(options),
             ProjectSubcommand::Enroll(c) => c.run(options),
             ProjectSubcommand::Info(c) => c.run(options),
+
+            ProjectSubcommand::ConfigureAddon(c) => c.run(options),
         }
     }
 }

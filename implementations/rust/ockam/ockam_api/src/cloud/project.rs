@@ -60,6 +60,10 @@ pub struct Project<'a> {
     #[cbor(b(10))]
     #[serde(borrow)]
     pub authority_identity: Option<CowStr<'a>>,
+
+    #[cbor(b(11))]
+    #[serde(borrow)]
+    pub okta_config: Option<OktaConfig<'a>>,
 }
 
 impl Clone for Project<'_> {
@@ -83,6 +87,8 @@ impl Project<'_> {
             identity: self.identity.clone(),
             authority_access_route: self.authority_access_route.as_ref().map(|x| x.to_owned()),
             authority_identity: self.authority_identity.as_ref().map(|x| x.to_owned()),
+            //okta_config: self.okta_config.to_owned(),
+            okta_config: None,
         }
     }
 
@@ -174,6 +180,7 @@ pub struct Enroller<'a> {
     #[b(4)] pub created_at: CowStr<'a>,
 }
 
+
 impl<'a> AddEnroller<'a> {
     pub fn new<S: Into<CowStr<'a>>>(identity_id: S, description: Option<S>) -> Self {
         Self {
@@ -185,6 +192,49 @@ impl<'a> AddEnroller<'a> {
         }
     }
 }
+
+#[derive(Encode, Decode, Serialize, Deserialize, Debug)]
+#[rustfmt::skip]
+#[cbor(map)]
+pub struct OktaConfig<'a> {
+    #[cfg(feature = "tag")]
+    #[serde(skip)]
+    #[cbor(n(0))] pub tag: TypeTag<6434814>,
+
+    #[serde(borrow)]
+    #[cbor(b(1))] pub tenant_url: CowStr<'a>,
+
+    #[serde(borrow)]
+    #[cbor(b(2))] pub certificate: CowStr<'a>,
+}
+
+impl<'a> OktaConfig<'a> {
+    pub fn new<S: Into<CowStr<'a>>>(tenant_url: S, certificate: S) -> Self {
+        Self {
+            #[cfg(feature = "tag")]
+            tag: TypeTag,
+            tenant_url: tenant_url.into(),
+            certificate: certificate.into()
+        }
+    }
+}
+
+impl Clone for OktaConfig<'_> {
+    fn clone(&self) -> Self {
+        self.to_owned()
+    }
+}
+impl OktaConfig<'_> {
+    pub fn to_owned<'r>(&self) -> OktaConfig<'r> {
+        OktaConfig {
+            #[cfg(feature = "tag")]
+            tag: self.tag.to_owned(),
+            tenant_url: self.tenant_url.to_owned(),
+            certificate: self.certificate.to_owned(),
+        }
+    }
+}
+
 
 mod node {
     use minicbor::Decoder;
@@ -331,6 +381,24 @@ mod node {
             self.request_controller(ctx, label, None, cloud_route, "projects", req_builder)
                 .await
         }
+
+        pub(crate) async fn configure_okta_plugin(
+            &mut self,
+            ctx: &mut Context,
+            dec: &mut Decoder<'_>,
+            project_id: &str,
+        ) -> Result<Vec<u8>> {
+            let req_wrapper: CloudRequestWrapper<OktaConfig> = dec.decode()?;
+            let cloud_route = req_wrapper.route()?;
+            let req_body = req_wrapper.req;
+
+            let label = "okta_config";
+            trace!(target: TARGET, %project_id, "configuring okta plugin");
+
+            let req_builder = Request::put(format!("/v0/{project_id}/addons/okta")).body(req_body);
+            self.request_controller(ctx, label, None, cloud_route, "projects", req_builder)
+                .await
+        }
     }
 }
 
@@ -360,6 +428,7 @@ mod tests {
                 authority_access_route: bool::arbitrary(g).then(|| String::arbitrary(g).into()),
                 authority_identity: bool::arbitrary(g)
                     .then(|| hex::encode(<Vec<u8>>::arbitrary(g)).into()),
+                okta_config: None
             })
         }
     }

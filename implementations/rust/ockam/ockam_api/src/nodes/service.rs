@@ -638,6 +638,11 @@ impl NodeManagerWorker {
             (Get, ["v0", "spaces", id]) => self.get_space(ctx, dec, id).await?,
             (Delete, ["v0", "spaces", id]) => self.delete_space(ctx, dec, id).await?,
 
+            // ==*== Project' addons ==*==
+            (Put, ["v0", "project-addons-config", project_id, "okta"]) => {
+                self.configure_okta_plugin(ctx, dec, project_id).await?
+            }
+            
             // ==*== Project' enrollers ==*==
             (Post, ["v0", "project-enrollers", project_id]) => {
                 self.add_project_enroller(ctx, dec, project_id).await?
