@@ -4,42 +4,55 @@ defmodule Ockam.Services.API.ABAC.PoliciesApi do
 
   alias Ockam.API.Request
 
+  alias Ockam.ABAC.ActionId
   alias Ockam.ABAC.PolicyStorage
   alias Ockam.ABAC.Policy
+
+  alias Ockam.TypedCBOR
 
   @impl true
   def setup(_options, state) do
     {:ok, state}
   end
 
+  defp encode_list_response(policies) do
+    formatted_policies =
+      Enum.map(policies, fn policy ->
+        action_id = ActionId.format(policy.action_id)
+        attribute_rules = Policy.to_rules_string(policy)
+        {action_id, attribute_rules}
+      end)
+      |> Map.new()
+
+    TypedCBOR.encode!({:map, :string, :string}, formatted_policies)
+  end
+
   @impl true
   def handle_request(%Request{method: :get, path: ""}, state) do
     ## TODO: different access permissions for policies
     with {:ok, policies} <- PolicyStorage.list() do
-      ## FIXME: figure out if to encode rules or action_id + rules
-      response = Policy.encode_list(policies)
+      response = encode_list_response(policies)
       {:reply, :ok, response, state}
     end
   end
 
   def handle_request(%Request{method: :get, path: path}, state) do
-    with_action_path(path, fn(action_id) ->
+    with_action_path(path, fn action_id ->
       with {:ok, policy} <- PolicyStorage.get_policy(action_id) do
-        ## FIXME: figure out if to encode rules or action_id + rules
-        response = Policy.encode(policy)
+        response = Policy.to_rules_string(policy)
         {:reply, :ok, response, state}
       end
     end)
   end
 
   def handle_request(%Request{method: :put, path: path, body: data}, state) do
-    with_action_path(path, fn(action_id) ->
-      case Policy.decode(data, action_id) do
+    with_action_path(path, fn action_id ->
+      case Policy.from_rules_string(data, action_id) do
         {:ok, policy} ->
           with :ok <- PolicyStorage.put_policy(policy) do
-            response = Policy.encode(policy)
-            {:reply, :ok, response, state}
+            {:reply, :ok, nil, state}
           end
+
         {:error, _decode_error} ->
           {:error, {:bad_request, :cannot_decode_policy}}
       end
@@ -47,7 +60,7 @@ defmodule Ockam.Services.API.ABAC.PoliciesApi do
   end
 
   def handle_request(%Request{method: :delete, path: path}, state) do
-    with_action_path(path, fn(action_id) ->
+    with_action_path(path, fn action_id ->
       with :ok <- PolicyStorage.delete_policy(action_id) do
         {:reply, :ok, nil, state}
       end
@@ -58,8 +71,14 @@ defmodule Ockam.Services.API.ABAC.PoliciesApi do
     case parse_path_action_id(path) do
       {:ok, action_id} ->
         fun.(action_id)
+
       {:error, :invalid_path} ->
         {:error, {:bad_request, :invalid_path}}
     end
+  end
+
+  defp parse_path_action_id(path) do
+    [resource, action] = String.split(path, "/", parts: 2)
+    ActionId.new(resource, action)
   end
 end

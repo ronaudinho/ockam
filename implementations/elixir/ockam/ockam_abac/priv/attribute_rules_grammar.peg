@@ -8,11 +8,17 @@ rule <- filter_rule / member_rule / logical_rule / boolean;
 filter_rule <- open filter attribute (attribute / value) close
 `[_Open, Filter, Attribute, Comp, _Close] = Node, {Filter, Attribute, Comp}`;
 filter <- ('=' / '<' / '>' / '!=') space*
-`[Filter, _Space] = Node, binary_to_atom(Filter)`;
+`[Filter, _Space] = Node,
+case Filter of
+  <<"=">> -> 'eq';
+  <<"!=">> -> 'neq';
+  <<">">> -> 'gt';
+  <<"<">> -> 'lt'
+end`;
 
 %% Member rules check that attribute or value is a member of a list
-member_rule <- open 'in' space* (attribute / value) (attribute / value_list) close
-`[_Open, _Member, _Space, Attr, List, _Close] = Node, {in, Attr, List}`;
+member_rule <- open ('member' / 'in') space* (attribute / value) (attribute / value_list) close
+`[_Open, _Member, _Space, Attr, List, _Close] = Node, {member, Attr, List}`;
 
 logical_rule <- combination_rule / not_rule / if_rule;
 

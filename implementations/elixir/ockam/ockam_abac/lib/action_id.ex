@@ -17,6 +17,17 @@ defmodule Ockam.ABAC.ActionId do
     %__MODULE__{resource: resource, action: action}
   end
 
+  def parse(action_id_str) do
+    case String.split(action_id_str, "/", parts: 2) do
+      [resource, action] -> {:ok, __MODULE__.new(resource, action)}
+      other -> {:error, {:invalid_action_id, other}}
+    end
+  end
+
+  def format(%__MODULE__{resource: resource, action: action}) do
+    "#{resource}/#{action}"
+  end
+
   def match_action_id?(%__MODULE__{} = pattern, %__MODULE__{} = action) do
     match_resource?(pattern, action) and match_action?(pattern, action)
   end

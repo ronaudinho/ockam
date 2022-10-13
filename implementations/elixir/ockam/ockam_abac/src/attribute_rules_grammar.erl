@@ -45,11 +45,17 @@ parse(Input) when is_binary(Input) ->
 
 -spec 'filter'(input(), index()) -> parse_result().
 'filter'(Input, Index) ->
-  p(Input, Index, 'filter', fun(I,D) -> (p_seq([p_choose([p_string(<<"=">>), p_string(<<"<">>), p_string(<<">">>), p_string(<<"!=">>)]), p_zero_or_more(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->[Filter, _Space] = Node, binary_to_atom(Filter) end).
+  p(Input, Index, 'filter', fun(I,D) -> (p_seq([p_choose([p_string(<<"=">>), p_string(<<"<">>), p_string(<<">">>), p_string(<<"!=">>)]), p_zero_or_more(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->[Filter, _Space] = Node,
+case Filter of
+  <<"=">> -> 'eq';
+  <<"!=">> -> 'neq';
+  <<">">> -> 'gt';
+  <<"<">> -> 'lt'
+end end).
 
 -spec 'member_rule'(input(), index()) -> parse_result().
 'member_rule'(Input, Index) ->
-  p(Input, Index, 'member_rule', fun(I,D) -> (p_seq([fun 'open'/2, p_string(<<"in">>), p_zero_or_more(fun 'space'/2), p_choose([fun 'attribute'/2, fun 'value'/2]), p_choose([fun 'attribute'/2, fun 'value_list'/2]), fun 'close'/2]))(I,D) end, fun(Node, _Idx) ->[_Open, _Member, _Space, Attr, List, _Close] = Node, {in, Attr, List} end).
+  p(Input, Index, 'member_rule', fun(I,D) -> (p_seq([fun 'open'/2, p_choose([p_string(<<"member">>), p_string(<<"in">>)]), p_zero_or_more(fun 'space'/2), p_choose([fun 'attribute'/2, fun 'value'/2]), p_choose([fun 'attribute'/2, fun 'value_list'/2]), fun 'close'/2]))(I,D) end, fun(Node, _Idx) ->[_Open, _Member, _Space, Attr, List, _Close] = Node, {member, Attr, List} end).
 
 -spec 'logical_rule'(input(), index()) -> parse_result().
 'logical_rule'(Input, Index) ->

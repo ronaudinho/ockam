@@ -20,6 +20,24 @@ defmodule Ockam.ABAC.PolicyStorage.DETS do
   @table_name __MODULE__
 
   @impl true
+  @spec list() :: {:ok, [Policy.t()]} | {:error, any()}
+  def list() do
+    case table_exists?() do
+      true ->
+        {:ok,
+         :dets.traverse(
+           @table_name,
+           fn {_key, policy} ->
+             {:continue, policy}
+           end
+         )}
+
+      false ->
+        {:error, :no_table}
+    end
+  end
+
+  @impl true
   @spec get_policy(ActionId.t()) :: {:ok, Policy.t()} | {:error, any()}
   def get_policy(action_id) do
     case table_exists?() do

@@ -17,6 +17,19 @@ defmodule Ockam.ABAC.PolicyStorage.ETS do
   @table_name __MODULE__
 
   @impl true
+  @spec list() :: {:ok, [Policy.t()]} | {:error, any()}
+  def list() do
+    case table_exists?() do
+      true ->
+        list = :ets.tab2list(@table_name)
+        {:ok, Enum.map(list, fn {_key, policy} -> policy end)}
+
+      false ->
+        {:error, :no_table}
+    end
+  end
+
+  @impl true
   @spec get_policy(ActionId.t()) :: {:ok, Policy.t()} | {:error, any()}
   def get_policy(action_id) do
     case table_exists?() do

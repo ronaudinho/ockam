@@ -43,10 +43,14 @@ defmodule Ockam.ABAC.AttributeRules do
   defguard is_filter(filter)
            when filter == :eq or filter == :lt or filter == :gt or filter == :neq
 
+  ## FIXME: use consistent naming for rule vs rules
   def parse(string) do
-    case Parser.parse(string) do
-      {:ok, rule} -> new(rule)
-      {:error, reason} -> {:error, reason}
+    case :attribute_rules_grammar.parse(string) do
+      {:fail, _reason} ->
+        {:error, {:cannot_parse_rule, string}}
+
+      parsed_rules ->
+        new(parsed_rules)
     end
   end
 
